@@ -32,6 +32,16 @@ INTENT_RULES = [
         "confidence": 0.95,
     },
     {
+        "intent": "NEEDS_CLARIFICATION",
+        "patterns": [
+            r"(?=.*\bpower\b)(?=.*\bused\b)",
+            r"(?=.*\bpower\b)(?=.*\bdid\s*i\s*use\b)",
+            r"(?=.*\belectricity\b)(?=.*\bdid\s*i\s*use\b)",
+        ],
+        "period": "NOW",
+        "confidence": 0.99,
+    },
+    {
         "intent": "CURRENT_VOLTAGE",
         "patterns": [
             r"current\s*voltage",
@@ -70,9 +80,19 @@ INTENT_RULES = [
             r"electricity\s*(consumed|used|consumption)\s*(today|so\s*far)",
             r"today.*(energy|kwh|units?|consumption)",
             r"(energy|kwh|units?).*(today|so\s*far)",
+            r"how\s*many\s*(units?|kwh)\s*(have\s*i\s*|did\s*i\s*|do\s*i\s*)?(used|use|consumed|consum(e|ed))?",
+            r"units?\s*(used|consumed|consumption|today)",
+            r"(kwh|units?)\s*used",
+            r"what\s*(is|was)\s*my\s*(units?|kwh|consumption)",
+            r"how\s*much\s*electricity\s*(have\s*i\s*|did\s*i\s*|do\s*i\s*)?(consum(e|ed)|used|use)",
+            r"electricity\s*(consumed|consume|consumption|used|use|did\s*i\s*consum|have\s*i\s*consum)",
+            r"what\s*is\s*my\s*(consumption|energy\s*usage)",
+            r"my\s*(consumption|energy\s*usage|units?)",
+            r"(consumption|energy\s*consumption|units?)\s*today",
+            r"how\s*great\s*(is\s*my\s*)?(energy\s*)?consumption",
         ],
         "period": "TODAY",
-        "confidence": 0.92,
+        "confidence": 0.93,
     },
     {
         "intent": "CURRENT_FREQUENCY",

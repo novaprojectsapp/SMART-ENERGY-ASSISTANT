@@ -62,6 +62,9 @@ def _handle_intent(intent_data, device_id: str | None, db: Session) -> str:
     if intent == "UNKNOWN":
         return "I'm not sure what you're asking. Try asking about your power usage, bill, or energy consumption."
 
+    if intent == "NEEDS_CLARIFICATION":
+        return "Do you mean your current power in watts or the energy you've consumed in kilowatt-hours?"
+
     latest = get_latest_reading(db, device_id)
     today_readings = get_today_readings(db, device_id)
     today_kwh = calc_daily_energy(today_readings)
@@ -69,7 +72,7 @@ def _handle_intent(intent_data, device_id: str | None, db: Session) -> str:
     if intent == "CURRENT_POWER":
         if not latest:
             return "No device data available yet. Please ensure your device is connected and sending readings."
-        return f"Your current power usage is {_format_power(latest.power)}."
+        return f"Your current measured power is {_format_power(latest.power)}."
 
     if intent == "CURRENT_VOLTAGE":
         if not latest:
@@ -82,8 +85,6 @@ def _handle_intent(intent_data, device_id: str | None, db: Session) -> str:
         return f"Your current is {latest.current:.2f} amperes."
 
     if intent == "CURRENT_ENERGY":
-        if not latest:
-            return "No device data available yet."
         return f"You have used {_format_energy(today_kwh)} today. This is a measured value."
 
     if intent == "CURRENT_FREQUENCY":

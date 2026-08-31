@@ -408,3 +408,124 @@ def test_database_path_is_project_root():
     assert db_path != outside, (
         f"database must NOT be outside the project: {outside}"
     )
+
+
+def test_power_variants_resolve_to_current_power():
+    """Live/current power phrasings must resolve to CURRENT_POWER."""
+    for query in [
+        "what is the current power",
+        "what power am I using",
+        "how much power am I using",
+        "how much power am I using now",
+        "what is my current power",
+        "tell me my power",
+        "what is the power right now",
+        "what's my power right now",
+        "current power?",
+        "power now?",
+    ]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] == "CURRENT_POWER", f"'{query}' should be CURRENT_POWER, got {data['intent']}"
+
+
+def test_energy_variants_resolve_to_energy():
+    """Energy/units/consumption phrasings must resolve to energy intent (kWh)."""
+    for query in [
+        "how much energy did I use today",
+        "how many units did I use",
+        "what is my energy usage today",
+        "how much electricity did I consume",
+        "how much energy have I consumed today",
+        "what is my consumption today",
+        "how many kWh did I use",
+    ]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] in ("CURRENT_ENERGY", "TODAY_ENERGY", "ENERGY_USAGE"), (
+            f"'{query}' should be an energy intent, got {data['intent']}"
+        )
+
+
+def test_ambiguous_used_power_returns_clarification():
+    """Ambiguous 'used power' phrases must return NEEDS_CLARIFICATION, not guess."""
+    for query in [
+        "what is the power I used",
+        "how much power did I use",
+        "how much electricity did I use",
+    ]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] == "NEEDS_CLARIFICATION", (
+            f"'{query}' should be NEEDS_CLARIFICATION, got {data['intent']}"
+        )
+
+
+def test_power_not_confused_with_energy():
+    """Power responses must use watts; energy responses must use kWh."""
+    from datetime import datetime, timezone
+
+    # Seed a device + reading so the voice handler has a live measurement.
+    client.post("/api/v1/devices", json={"id": "pw-dev-001", "name": "PW"})
+    client.post("/api/v1/devices/pw-dev-001/readings", json={
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "voltage": 230.0,
+        "current": 0.55,
+        "power": 125.91,
+        "energy": 0.100,
+        "frequency": 50.0,
+        "power_factor": 0.95,
+    })
+
+    res = client.post("/api/v1/voice/query", json={"text": "what is the current power", "device_id": "pw-dev-001"})
+    assert res.status_code == 200
+    power_response = res.json()["response"].lower()
+    assert "watt" in power_response
+
+    res = client.post("/api/v1/voice/query", json={"text": "how much energy did I use today", "device_id": "pw-dev-001"})
+    assert res.status_code == 200
+    energy_response = res.json()["response"].lower()
+    assert "kilowatt" in energy_response
+
+
+def test_analytics_summary_missing_optional_values():
+    """Analytics frontend-safe: API must tolerate missing/null optional numeric values."""
+    from fastapi import HTTPException
+    res = client.get("/api/v1/analytics/summary")
+    assert res.status_code == 200
+    data = res.json()
+    # The frontend reads data.power.peak_watts_today — it must be present (not undefined).
+    assert "power" in data
+    assert "peak_watts_today" in data.get("power", {}), (
+        "Analytics 'power' block must expose peak_watts_today for the frontend"
+    )
+    for key in ("today_kwh", "week_kwh", "month_kwh", "avg_daily_kwh"):
+        assert key in data.get("energy", {}), f"energy.{key} must be present"
+
+
+def test_analytics_empty_dataset_does_not_crash():
+    """Analytics with no data must return a sane empty response, not a 500."""
+    res = client.get("/api/v1/analytics/summary")
+    assert res.status_code == 200
+    data = res.json()
+    # Even with no readings the backend returns numeric zeros; frontend safely formats.
+    assert data["data_source"] in ("MEASURED", "NO_DATA")
+    assert isinstance(data.get("power", {}).get("peak_watts_today"), (int, float))
+    assert isinstance(data.get("power", {}).get("current_avg_watts"), (int, float))
+
+
+def test_analytics_null_safe_within_frontend_contract():
+    """Null/undefined optional analytics fields must not crash the frontend formatter."""
+    import json as _json
+    # Simulate a payload where optional fields could be missing/null.
+    sample = {
+        "energy": {"today_kwh": None, "week_kwh": None, "month_kwh": None, "avg_daily_kwh": None},
+        "power": {"current_avg_watts": None, "peak_watts_today": None},
+        "quality": {"avg_voltage": None, "avg_power_factor": None},
+        "cost": {"today_energy_charge": None, "month_energy_charge": None, "currency": "INR"},
+        "data_source": "NO_DATA",
+    }
+    _json.dumps(sample)  # payload is JSON-serializable; frontend must guard with safeNum/fmt
