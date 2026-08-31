@@ -37,6 +37,42 @@ const api = {
         }
     },
 
+    async put(path, data) {
+        try {
+            const res = await fetch(`${API_BASE}${path}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(data),
+            });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({ error: res.statusText }));
+                throw new Error(err.detail || err.error || 'Request failed');
+            }
+            return res.json();
+        } catch (e) {
+            if (e.name === 'TypeError' && e.message.includes('fetch')) {
+                throw new Error('Server unreachable');
+            }
+            throw e;
+        }
+    },
+
+    async DELETE(path) {
+        try {
+            const res = await fetch(`${API_BASE}${path}`, { method: 'DELETE' });
+            if (!res.ok) {
+                const err = await res.json().catch(() => ({ error: res.statusText }));
+                throw new Error(err.detail || err.error || 'Request failed');
+            }
+            return res.json();
+        } catch (e) {
+            if (e.name === 'TypeError' && e.message.includes('fetch')) {
+                throw new Error('Server unreachable');
+            }
+            throw e;
+        }
+    },
+
     health: () => api.get('/health'),
     getDevices: () => api.get('/devices'),
     getDevice: (id) => api.get(`/devices/${id}`),
@@ -59,4 +95,17 @@ const api = {
     simulateWhatIf: (reductionPercent, deviceId) => api.post('/what-if', { reduction_percent: reductionPercent, device_id: deviceId }),
     getSettings: () => api.get('/settings'),
     getReports: (days, deviceId) => api.get(`/reports/energy-summary?days=${days}${deviceId ? '&device_id=' + deviceId : ''}`),
+    getAppliances: () => api.get('/appliances'),
+    createAppliance: (data) => api.post('/appliances', data),
+    updateAppliance: (id, data) => api.put(`/appliances/${id}`, data),
+    deleteAppliance: (id) => api.DELETE(`/appliances/${id}`),
+    controlAppliance: (applianceId, action, source = 'USER') => api.post(`/appliances/${applianceId}/control`, { appliance_id: applianceId, action, source }),
+    getSchedules: () => api.get('/schedules'),
+    createSchedule: (data) => api.post('/schedules', data),
+    updateSchedule: (id, data) => api.put(`/schedules/${id}`, data),
+    deleteSchedule: (id) => api.DELETE(`/schedules/${id}`),
+    enableSchedule: (id) => api.post(`/schedules/${id}/enable`),
+    disableSchedule: (id) => api.post(`/schedules/${id}/disable`),
+    getControlCommands: (limit = 50) => api.get(`/control-commands?limit=${limit}`),
+    runScheduler: () => api.post('/scheduler/run'),
 };

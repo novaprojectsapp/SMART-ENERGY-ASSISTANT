@@ -20,6 +20,7 @@ from .api.routers import (
     settings,
     reports,
     ai_insights,
+    scheduling,
 )
 
 logger = setup_logging()
@@ -62,6 +63,7 @@ app.include_router(whatif.router)
 app.include_router(settings.router)
 app.include_router(reports.router)
 app.include_router(ai_insights.router)
+app.include_router(scheduling.router)
 
 
 @app.exception_handler(Exception)

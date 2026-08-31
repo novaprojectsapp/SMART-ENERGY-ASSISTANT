@@ -122,7 +122,7 @@ smart-energy-assistant/
 - Energy Coach recommendations
 - What-If simulator
 - Settings page
-- 30 passing tests
+- Smart Appliance Scheduling & Control (see `docs/scheduling.md`)
 - PZEM data simulator
 
 ### Requires Hardware
@@ -161,6 +161,14 @@ smart-energy-assistant/
 | `/api/v1/what-if` | POST | What-If simulation |
 | `/api/v1/reports/energy-summary` | GET | Energy report |
 | `/api/v1/settings` | GET | Settings |
+| `/api/v1/appliances` | GET/POST | List/register appliances |
+| `/api/v1/appliances/{id}` | GET/PUT/DELETE | Get/update/delete appliance |
+| `/api/v1/appliances/{id}/control` | POST | Manual ON/OFF control |
+| `/api/v1/control-commands` | GET | Control command history |
+| `/api/v1/schedules` | GET/POST | List/create schedules |
+| `/api/v1/schedules/{id}` | GET/PUT/DELETE | Get/update/delete schedule |
+| `/api/v1/schedules/{id}/enable` `/disable` | POST | Enable/disable schedule |
+| `/api/v1/scheduler/run` | POST | Run scheduler (safe, no GPIO) |
 
 ## ESP32 Connection
 
@@ -181,6 +189,19 @@ Tamil Nadu Domestic Tariff (prototype):
 | 4 | 501+ | ₹6.45/unit |
 
 Billing period: 2 months (bimonthly)
+
+## Smart Appliance Scheduling & Control
+
+Register appliances and build recurring ON/OFF schedules (ONCE / DAILY / WEEKLY),
+create them from the dashboard or by voice ("turn on bulb 1 at 6 PM every day"),
+run the scheduler, and record control history. See `docs/scheduling.md`.
+
+> **Honesty note:** Scheduling software is ready, but **physical appliance control
+> is pending hardware**. Until ESP32 relay control firmware is integrated, all
+> ON/OFF commands are recorded as **SIMULATED / PENDING** with the message
+> *"Hardware control is not connected yet."* The system never claims to have
+> physically switched a device. Production data and PZEM measurement are
+> unaffected.
 
 ## Safety Rules
 

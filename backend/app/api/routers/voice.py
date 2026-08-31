@@ -5,6 +5,8 @@ from ...database import get_db
 from ...ai.intent_engine import classify_intent
 from ...ai.llm_fallback import call_llm_fallback
 from ...ai.data_access import get_latest_reading, get_today_readings, calc_daily_energy, get_energy_kwh
+from ...ai.schedule_parser import extract_appliance_ref, parse_time
+from ...ai.schedule_actions import ScheduleActions
 from ...billing.engine import load_tariff, calculate_billing
 from ...models import Device, ApplianceActivity, AIModel
 from ...utils.time import utcnow
@@ -47,7 +49,7 @@ def _format_currency(amount: float, currency: str = "INR") -> str:
     return f"{currency} {amount:.2f}"
 
 
-def _handle_intent(intent_data, device_id: str | None, db: Session) -> str:
+def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: str = "") -> str:
     intent = intent_data.intent
     period = intent_data.period
 
@@ -56,14 +58,67 @@ def _handle_intent(intent_data, device_id: str | None, db: Session) -> str:
             "I can help you with: current power, voltage, current, energy, frequency, "
             "power factor, today's usage, today's cost, monthly bill, bill prediction, "
             "energy insights, anomalies, peak usage, appliance activity, "
-            "daily, weekly, monthly usage, saving tips, and what-if scenarios."
+            "daily, weekly, monthly usage, saving tips, what-if scenarios, and "
+            "appliance scheduling. For example: 'turn on bulb 1 at 6 PM every day'."
         )
 
     if intent == "UNKNOWN":
-        return "I'm not sure what you're asking. Try asking about your power usage, bill, or energy consumption."
+        return "I'm not sure what you're asking. Try asking about your power usage, bill, energy consumption, or scheduling."
 
     if intent == "NEEDS_CLARIFICATION":
         return "Do you mean your current power in watts or the energy you've consumed in kilowatt-hours?"
+
+    actions = ScheduleActions(db)
+    session_key = device_id or "default"
+
+    if intent in ("MANUAL_APPLIANCE_ON", "MANUAL_APPLIANCE_OFF"):
+        draft = intent_data.extra or {}
+        action = "ON" if intent == "MANUAL_APPLIANCE_ON" else "OFF"
+        return actions.manual_control(draft.get("appliance_ref"), action)
+
+    if intent == "LIST_APPLIANCES":
+        return actions.list_appliances()
+
+    if intent == "LIST_SCHEDULES":
+        return actions.list_schedules()
+
+    if intent == "CREATE_SCHEDULE":
+        draft = dict(intent_data.extra or {})
+        previous = actions.load_draft(session_key) or {}
+        merged = {**previous, **draft}
+        if merged.get("schedule_type") is None:
+            merged["schedule_type"] = previous.get("schedule_type") or "DAILY"
+
+        # If the new utterance only mentions a time ("turn it on at 6"), carry over
+        # the appliance/action from the previous draft.
+        if not merged.get("appliance_ref") and previous.get("appliance_ref"):
+            merged["appliance_ref"] = previous["appliance_ref"]
+        if not merged.get("action") and previous.get("action"):
+            merged["action"] = previous["action"]
+
+        question = actions.maybe_clarify(merged)
+        if question:
+            actions.save_draft(session_key, merged)
+            return question
+
+        result, err = actions.create_schedule(merged)
+        if err:
+            return err
+        actions.clear_draft(session_key)
+        return result["message"]
+
+    if intent in ("ENABLE_SCHEDULE", "DISABLE_SCHEDULE"):
+        ref = extract_appliance_ref(raw_text)
+        t = parse_time(raw_text)
+        return actions.enable_disable("enable" if intent == "ENABLE_SCHEDULE" else "disable", ref, t)
+
+    if intent == "DELETE_SCHEDULE":
+        ref = extract_appliance_ref(raw_text)
+        t = parse_time(raw_text)
+        return actions.delete_schedule(ref, t)
+
+    if intent == "UPDATE_SCHEDULE":
+        return "To change a schedule, tell me the appliance and the new time, for example 'change bulb 1 to turn off at 11 PM'."
 
     latest = get_latest_reading(db, device_id)
     today_readings = get_today_readings(db, device_id)
@@ -210,7 +265,7 @@ async def process_voice_query(req: VoiceQueryRequest, db: Session = Depends(get_
             intent_result = type("Intent", (), llm_result)()
             source = "LLM"
 
-    response_text = _handle_intent(intent_result, req.device_id, db)
+    response_text = _handle_intent(intent_result, req.device_id, db, req.text)
 
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
 

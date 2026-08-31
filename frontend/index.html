@@ -29,6 +29,9 @@
                     <a class="nav-link" data-page="appliance" onclick="navigate('appliance')">
                         <span class="icon">🔌</span> Appliances
                     </a>
+                    <a class="nav-link" data-page="scheduler" onclick="navigate('scheduler')">
+                        <span class="icon">⏰</span> Smart Scheduler
+                    </a>
                 </div>
                 <div class="nav-section">
                     <div class="nav-section-title">Financial</div>
@@ -96,6 +99,7 @@
     <script src="/js/dashboard.js"></script>
     <script src="/js/analytics.js"></script>
     <script src="/js/appliance.js"></script>
+    <script src="/js/scheduler.js"></script>
     <script src="/js/cost.js"></script>
     <script src="/js/voice.js"></script>
     <script src="/js/coach.js"></script>
@@ -120,6 +124,7 @@
                 dashboard: 'Dashboard',
                 analytics: 'Analytics',
                 appliance: 'Appliances',
+                scheduler: 'Smart Scheduler',
                 cost: 'Cost & Billing',
                 voice: 'Voice Assistant',
                 coach: 'Energy Coach',
@@ -166,6 +171,9 @@
                         <div id="appliance-models"></div>
                     </div>`;
                 initAppliance();
+            } else if (page === 'scheduler') {
+                content.innerHTML = `<div id="scheduler-page"></div>`;
+                initScheduler();
             } else if (page === 'cost') {
                 content.innerHTML = `
                     <div id="cost-page">

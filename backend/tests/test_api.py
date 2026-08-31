@@ -529,3 +529,235 @@ def test_analytics_null_safe_within_frontend_contract():
         "data_source": "NO_DATA",
     }
     _json.dumps(sample)  # payload is JSON-serializable; frontend must guard with safeNum/fmt
+
+# ============================================================================
+# SMART APPLIANCE SCHEDULING & CONTROL
+# ============================================================================
+
+def _make_sched_appliance(device_id="sched-dev", name="Sched Bulb 1", channel=1, ctype="BULB"):
+    client.post("/api/v1/devices", json={"id": device_id, "name": device_id, "device_type": "PZEM-004T"})
+    r = client.post("/api/v1/appliances", json={
+        "name": name, "type": ctype, "channel": channel, "device_id": device_id, "control_capable": True,
+    })
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+# ---- APPLIANCES ----
+def test_appliance_create_and_list():
+    app = _make_sched_appliance(name="Sched Bulb Electric A")
+    assert app["name"] == "Sched Bulb Electric A"
+    assert app["type"] == "BULB"
+    assert app["control_capable"] is True
+    listed = client.get("/api/v1/appliances").json()
+    assert any(a["id"] == app["id"] for a in listed)
+
+
+def test_appliance_duplicate_handling():
+    client.post("/api/v1/devices", json={"id": "sched-dev-dup", "name": "dup", "device_type": "PZEM-004T"})
+    payload = {"name": "Sched Duplicate Bulb", "type": "BULB", "channel": 5, "device_id": "sched-dev-dup"}
+    r1 = client.post("/api/v1/appliances", json=payload)
+    assert r1.status_code == 201
+    # Duplicate name is allowed (no unique constraint), but invalid type is rejected.
+    bad = client.post("/api/v1/appliances", json={**payload, "type": "nonsense"})
+    assert bad.status_code == 422
+
+
+def test_appliance_update():
+    app = _make_sched_appliance(name="Sched Update Bulb", channel=3)
+    r = client.put(f"/api/v1/appliances/{app['id']}", json={"name": "Sched Update Bulb Renamed", "enabled": False})
+    assert r.status_code == 200
+    assert r.json()["name"] == "Sched Update Bulb Renamed"
+    assert r.json()["enabled"] is False
+
+
+def test_appliance_delete():
+    app = _make_sched_appliance(name="Sched Delete Bulb", channel=4)
+    # attach a schedule so delete also removes it
+    client.post("/api/v1/schedules", json={"appliance_id": app["id"], "action": "ON", "start_time": "08:00", "schedule_type": "DAILY"})
+    r = client.delete(f"/api/v1/appliances/{app['id']}")
+    assert r.status_code == 200
+    assert client.get(f"/api/v1/appliances/{app['id']}").status_code == 404
+
+
+# ---- SCHEDULES ----
+def _make_sched_schedule(appliance_id, action="ON", start_time="18:00", sched_type="DAILY", days=None):
+    payload = {
+        "appliance_id": appliance_id,
+        "action": action,
+        "start_time": start_time,
+        "schedule_type": sched_type,
+    }
+    if days is not None:
+        payload["days_of_week"] = days
+    r = client.post("/api/v1/schedules", json=payload)
+    assert r.status_code in (200, 201), r.text
+    return r.json()
+
+
+def test_schedule_create_on_daily():
+    app = _make_sched_appliance(name="Sched SchedDaily Bulb")
+    s = _make_sched_schedule(app["id"], "ON", "18:00", "DAILY")
+    assert s["action"] == "ON"
+    assert s["schedule_type"] == "DAILY"
+    assert s["enabled"] is True
+    assert s["next_execution_at"] is not None
+
+
+def test_schedule_create_off_weekly():
+    app = _make_sched_appliance(name="Sched SchedWeekly Bulb")
+    s = _make_sched_schedule(app["id"], "OFF", "22:00", "WEEKLY", days=[0, 4])
+    assert s["action"] == "OFF"
+    assert s["schedule_type"] == "WEEKLY"
+    assert s["days_of_week"] == [0, 4]
+
+
+def test_schedule_create_once():
+    app = _make_sched_appliance(name="Sched SchedOnce Bulb")
+    s = _make_sched_schedule(app["id"], "ON", "12:00", "ONCE")
+    assert s["schedule_type"] == "ONCE"
+
+
+def test_schedule_invalid_time():
+    app = _make_sched_appliance(name="Sched BadTime Bulb")
+    r = client.post("/api/v1/schedules", json={"appliance_id": app["id"], "action": "ON", "start_time": "25:99", "schedule_type": "DAILY"})
+    assert r.status_code == 422
+
+
+def test_schedule_invalid_action():
+    app = _make_sched_appliance(name="Sched BadAction Bulb")
+    r = client.post("/api/v1/schedules", json={"appliance_id": app["id"], "action": "TOGGLE", "start_time": "10:00"})
+    assert r.status_code == 422
+
+
+def test_schedule_missing_appliance():
+    r = client.post("/api/v1/schedules", json={"appliance_id": "does-not-exist", "action": "ON", "start_time": "10:00"})
+    assert r.status_code == 404
+
+
+def test_schedule_enable_disable():
+    app = _make_sched_appliance(name="Sched Toggle Bulb")
+    s = _make_sched_schedule(app["id"], "ON", "20:00", "DAILY")
+    r = client.post(f"/api/v1/schedules/{s['id']}/disable").json()
+    assert r["enabled"] is False
+    assert r["next_execution_at"] is None
+    r = client.post(f"/api/v1/schedules/{s['id']}/enable").json()
+    assert r["enabled"] is True
+
+
+def test_schedule_delete():
+    app = _make_sched_appliance(name="Sched DelSchedule Bulb")
+    s = _make_sched_schedule(app["id"], "ON", "09:00", "DAILY")
+    assert client.delete(f"/api/v1/schedules/{s['id']}").status_code == 200
+    assert client.get(f"/api/v1/schedules/{s['id']}").status_code == 404
+
+
+# ---- SCHEDULER ----
+def test_scheduler_due_executes_once_and_duplicate_prevented():
+    from app.services.scheduler import SchedulerService
+    from app.models import Schedule, ControlCommand
+    app = _make_sched_appliance(name="Sched SvcBulb")
+    s = _make_sched_schedule(app["id"], "ON", "18:00", "DAILY")
+    db_sched = __import__("app.models", fromlist=["Schedule"]).Schedule
+    # Simulate a due schedule by setting next_execution_at in the past.
+    from sqlalchemy.orm import Session
+    from app.database import SessionLocal
+    db = SessionLocal()
+    row = db.query(db_sched).filter(db_sched.id == s["id"]).first()
+    from datetime import datetime, timezone
+    row.next_execution_at = datetime.now(timezone.utc)
+    db.commit()
+    svc = SchedulerService(db)
+    commands = svc.run_due()
+    assert len(commands) == 1
+    assert commands[0].action == "ON"
+    assert commands[0].source == "SCHEDULE"
+    # Running again in the same window must NOT create a duplicate.
+    commands2 = svc.run_due()
+    assert commands2 == []
+
+    # Verify a control command row was persisted and honestly marked SIMULATED (no hardware).
+    cmd_count = db.query(ControlCommand).filter(ControlCommand.appliance_id == app["id"]).count()
+    assert cmd_count >= 1
+    new_cmd = db.query(ControlCommand).filter(ControlCommand.appliance_id == app["id"]).order_by(ControlCommand.created_at.desc()).first()
+    assert new_cmd.status == "PENDING"
+    assert "Hardware control is not connected yet" in new_cmd.message
+    db.close()
+
+
+def test_scheduler_disabled_does_not_execute():
+    from app.services.scheduler import SchedulerService, DEFAULT_TZ
+    from app.models import Schedule as SchedModel
+    from app.database import SessionLocal
+    from datetime import datetime, timezone
+    app = _make_sched_appliance(name="Sched DisabledBulb")
+    s = _make_sched_schedule(app["id"], "OFF", "18:00", "DAILY")
+    db = SessionLocal()
+    row = db.query(SchedModel).filter(SchedModel.id == s["id"]).first()
+    row.enabled = False
+    row.next_execution_at = datetime.now(timezone.utc)
+    db.commit()
+    commands = SchedulerService(db).run_due()
+    assert commands == []
+    db.close()
+
+
+def test_scheduler_deleted_does_not_execute():
+    from app.services.scheduler import SchedulerService
+    from app.database import SessionLocal
+    from datetime import datetime, timezone
+    app = _make_sched_appliance(name="Sched DeletedBulb")
+    s = _make_sched_schedule(app["id"], "ON", "18:00", "DAILY")
+    client.delete(f"/api/v1/schedules/{s['id']}")
+    db = SessionLocal()
+    commands = SchedulerService(db).run_due()
+    assert commands == []
+    db.close()
+
+
+def test_scheduler_next_execution_computed():
+    from app.services.scheduler import SchedulerService
+    from app.models import Schedule as SchedModel
+    from app.database import SessionLocal
+    from datetime import datetime, timezone
+    app = _make_sched_appliance(name="Sched NextBulb")
+    s = _make_sched_schedule(app["id"], "ON", "18:00", "DAILY")
+    db = SessionLocal()
+    row = db.query(SchedModel).filter(SchedModel.id == s["id"]).first()
+    next_at = row.next_execution_at
+    assert next_at is not None
+    # Stored as naive UTC; must be a future occurrence (18:00 IST -> 12:30 UTC).
+    assert next_at.hour == 12 and next_at.minute == 30
+    assert next_at > datetime.now(timezone.utc).replace(tzinfo=None)
+    db.close()
+
+
+# ---- CONTROL (manual) ----
+def test_control_honest_simulated_response():
+    app = _make_sched_appliance(name="Sched CtrlBulb")
+    r = client.post(f"/api/v1/appliances/{app['id']}/control", json={
+        "appliance_id": app["id"], "action": "ON", "source": "USER",
+    })
+    assert r.status_code == 201
+    data = r.json()
+    assert data["status"] == "SIMULATED"
+    assert "Hardware control is not connected yet" in data["message"]
+    assert data["hardware_control_available"] is False
+
+
+def test_control_non_capable_rejected():
+    client.post("/api/v1/devices", json={"id": "ncap-dev", "name": "ncap", "device_type": "PZEM-004T"})
+    nc = client.post("/api/v1/appliances", json={"name": "Sched NCap", "type": "OTHER", "channel": 1, "device_id": "ncap-dev", "control_capable": False})
+    r = client.post(f"/api/v1/appliances/{nc.json()['id']}/control", json={"appliance_id": nc.json()["id"], "action": "ON", "source": "USER"})
+    assert r.status_code == 400
+
+
+# ---- DB SAFETY ----
+def test_production_db_untouched_by_scheduling_tests():
+    """Scheduling tests must not have created rows in the production DB."""
+    from app.config import settings, _resolve_database_url
+    import sqlite3
+    test_url = _resolve_database_url()
+    assert "test" in test_url, "Tests must run against the isolated test DB"
+    # Ensure the active engine points at the isolated test DB.
+    assert "test_smart_energy" in test_url

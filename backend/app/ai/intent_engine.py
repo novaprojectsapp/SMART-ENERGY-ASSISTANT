@@ -1,6 +1,8 @@
 import re
 from dataclasses import dataclass
 
+from .schedule_parser import extract_draft, parse_manual_action
+
 
 @dataclass
 class Intent:
@@ -359,6 +361,99 @@ INTENT_RULES = [
         "confidence": 0.92,
     },
     {
+        "intent": "CREATE_SCHEDULE",
+        "patterns": [
+            r"(schedule|set\s*(up)?|add|create|make)\s*.*\b(turn\s*(on|off)|on|off)\b.*\b(at|for|every|daily|once|weekdays|tomorrow)\b",
+            r"(schedule|set\s*(up)?|add|create)\s*.*(every\s*day|at\s*\d|at\s*(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve))",
+            r"^schedule\b.*",
+            r"turn\s+(the\s+)?(it|bulb|light|fan|ac|tv|pump|appliance|device|this)\s*(on|off)\b.*\b(at|every|daily|tomorrow|once|weekdays)\b",
+            r"turn\s*(on|off)\b.*\b(at|every|daily|tomorrow|once|weekdays)\b",
+            r"(every\s*day|daily).*(turn|switch)\s*(on|off).*(at)",
+            r"turn\s*(on|off)\b.*\bevery\s*(day|morning|evening|night|monday|tuesday|wednesday|thursday|friday|saturday|sunday)\b",
+        ],
+        "period": "NOW",
+        "confidence": 0.94,
+    },
+    {
+        "intent": "UPDATE_SCHEDULE",
+        "patterns": [
+            r"(change|update|modify|edit)\s*(the\s*)?(schedule|timing|time)",
+            r"(change|update|modify|edit)\s*.*\bschedule\b",
+            r"reschedule",
+        ],
+        "period": "NOW",
+        "confidence": 0.9,
+    },
+    {
+        "intent": "DELETE_SCHEDULE",
+        "patterns": [
+            r"(delete|remove|cancel|clear|drop)\s.*\bschedule\b",
+            r"remove\s*(the\s*)?\d.*(on|off)\b",
+            r"cancel\s*(the\s*)?\d.*(schedule|on|off)",
+        ],
+        "period": "NOW",
+        "confidence": 0.9,
+    },
+    {
+        "intent": "ENABLE_SCHEDULE",
+        "patterns": [
+            r"(enable|activate|turn\s*back\s*on)\s*(the\s*)?(schedule|scheduler)",
+            r"(enable|activate)\s*.*\bschedule\b",
+        ],
+        "period": "NOW",
+        "confidence": 0.9,
+    },
+    {
+        "intent": "DISABLE_SCHEDULE",
+        "patterns": [
+            r"(disable|pause|turn\s*off|deactivate)\s*(the\s*)?(schedule|scheduler|auto)",
+            r"(disable|pause)\s*.*\bschedule\b",
+        ],
+        "period": "NOW",
+        "confidence": 0.9,
+    },
+    {
+        "intent": "LIST_SCHEDULES",
+        "patterns": [
+            r"(show|list|view|tell\s*me|what)\s*(all|my|the|current)?\s*schedules?",
+            r"(show|list)\s*(my\s*)?(upcoming\s*)?schedules?",
+            r"what\s*schedules\s*(do\s*i\s*have|are\s*set|exist)",
+            r"(show|list).*scheduled",
+        ],
+        "period": "NOW",
+        "confidence": 0.9,
+    },
+    {
+        "intent": "MANUAL_APPLIANCE_ON",
+        "patterns": [
+            r"(turn|switch|put)\s*(the\s*)?(bulb|light|fan|ac|tv|pump|appliance|device)\s*(on)\b",
+            r"turn\s*on\s+(the\s*)?(bulb|light|fan|ac|tv|pump)\s*\d?",
+            r"(bulb|light|fan|tv|pump|ac)\s*\d?\s*\bon\b",
+        ],
+        "period": "NOW",
+        "confidence": 0.9,
+    },
+    {
+        "intent": "MANUAL_APPLIANCE_OFF",
+        "patterns": [
+            r"(turn|switch|put)\s*(the\s*)?(bulb|light|fan|ac|tv|pump|appliance|device)\s*(off)\b",
+            r"turn\s*off\s+(the\s*)?(bulb|light|fan|ac|tv|pump)\s*\d?",
+            r"(bulb|light|fan|tv|pump|ac)\s*\d?\s*\boff\b",
+        ],
+        "period": "NOW",
+        "confidence": 0.9,
+    },
+    {
+        "intent": "LIST_APPLIANCES",
+        "patterns": [
+            r"(show|list|view|tell\s*me)\s*(my\s*|all\s*|the\s*)?(appliances|devices|bulbs|lights|what\s*appliances)",
+            r"what\s*appliances\s*(do\s*i\s*have|are\s*registered|exist)",
+            r"(how\s*many)\s*(appliances|bulbs|lights)\s*(do\s*i\s*have|exist|registered)",
+        ],
+        "period": "NOW",
+        "confidence": 0.9,
+    },
+    {
         "intent": "HELP",
         "patterns": [
             r"^help$",
@@ -393,12 +488,21 @@ def classify_intent(text: str) -> Intent:
                 break
 
     if best_match:
+        intent = best_match["intent"]
+        extra = {}
+        if intent == "CREATE_SCHEDULE":
+            extra = extract_draft(text)
+        elif intent in ("MANUAL_APPLIANCE_ON", "MANUAL_APPLIANCE_OFF"):
+            manual = parse_manual_action(text)
+            manual["action"] = "ON" if intent == "MANUAL_APPLIANCE_ON" else "OFF"
+            extra = manual
         return Intent(
-            intent=best_match["intent"],
+            intent=intent,
             confidence=best_match["confidence"],
             period=best_match.get("period", "NOW"),
             basis=best_match.get("basis", ""),
             comparison=best_match.get("comparison", ""),
+            extra=extra,
         )
 
     return Intent(intent="UNKNOWN", confidence=0.0)
