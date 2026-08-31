@@ -1,5 +1,10 @@
 import sys
 import os
+
+# Must be set BEFORE importing app modules so tests use an isolated test DB
+# (test_smart_energy.db) and never touch the production smart_energy.db.
+os.environ["APP_TESTING"] = "1"
+
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
 from fastapi.testclient import TestClient
@@ -280,3 +285,126 @@ def test_settings():
 def test_reports():
     res = client.get("/api/v1/reports/energy-summary?days=30")
     assert res.status_code == 200
+
+
+def test_terminology_power_vs_current():
+    """POWER ≠ CURRENT: 'power' must never classify as amperage intent."""
+    for query in [
+        "what is the current power",
+        "how much power am I using",
+        "current power reading",
+    ]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] == "CURRENT_POWER", f"'{query}' should be CURRENT_POWER, got {data['intent']}"
+
+
+def test_terminology_current_is_amps():
+    """'current' in amperage context must classify as CURRENT_CURRENT."""
+    for query in [
+        "how much current",
+        "how many amps",
+        "what is the current amperage",
+    ]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] == "CURRENT_CURRENT", f"'{query}' should be CURRENT_CURRENT, got {data['intent']}"
+
+
+def test_terminology_old_age_no_misclassification():
+    """'old age' must NOT classify as CURRENT_CURRENT or any current intent."""
+    for query in ["old age", "i am of old age", "what is my current"]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] not in ("CURRENT_CURRENT",), (
+            f"'{query}' must NOT classify as CURRENT_CURRENT, got {data['intent']}"
+        )
+
+
+def test_terminology_cost_is_not_bill():
+    """COST queries must map to TODAY_COST, not BILL_PREDICTION."""
+    for query in ["what is my cost", "what is my electricity cost"]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] == "TODAY_COST", f"'{query}' should be TODAY_COST, got {data['intent']}"
+
+
+def test_terminology_bill_is_not_monthly():
+    """'bill' queries (generic) must map to BILL_PREDICTION (billing-period estimate)."""
+    for query in ["what is my bill", "what will my bill be"]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] == "BILL_PREDICTION", f"'{query}' should be BILL_PREDICTION, got {data['intent']}"
+
+
+def test_terminology_two_month_is_billing_period():
+    """'2 months' / 'bimonthly' must classify as BILL_PREDICTION, not MONTHLY_BILL."""
+    for query in [
+        "what will be the bill for 2 months",
+        "bill for 2 months",
+        "bimonthly bill",
+    ]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] == "BILL_PREDICTION", (
+            f"'{query}' must be BILL_PREDICTION (billing-period), got {data['intent']}"
+        )
+
+
+def test_ambiguity_returns_unknown():
+    """Genuinely ambiguous or unrecognised text should return UNKNOWN."""
+    for query in ["blargh flerb noop", "xyzzy", "old age"]:
+        res = client.post("/api/v1/voice/query", json={"text": query})
+        assert res.status_code == 200
+        data = res.json()
+        assert data["intent"] == "UNKNOWN", f"'{query}' should be UNKNOWN, got {data['intent']}"
+
+
+def test_production_database_not_modified_by_tests():
+    """Verify production smart_energy.db is untouched by pytest."""
+    import sqlite3 as _sqlite3
+    from pathlib import Path
+
+    prod_db = Path(__file__).resolve().parent.parent.parent / "smart_energy.db"
+    assert prod_db.exists(), "Production smart_energy.db must exist"
+    conn = _sqlite3.connect(str(prod_db))
+    c = conn.cursor()
+    c.execute("SELECT COUNT(*) FROM devices")
+    device_count = c.fetchone()[0]
+    c.execute("SELECT COUNT(*) FROM energy_readings")
+    reading_count = c.fetchone()[0]
+    conn.close()
+    assert device_count >= 0, "devices table must exist"
+    assert reading_count >= 0, "energy_readings table must exist"
+
+
+def test_database_path_is_project_root():
+    """Config must resolve the DB path relative to project root."""
+    from pathlib import Path
+    from app.config import BASE_DIR, settings
+
+    project_root = Path(BASE_DIR).resolve()
+
+    # Normalize the SQLite URL to a filesystem path.
+    # SQLite URLs have the form: sqlite:///<abs path>
+    raw = settings.DATABASE_URL
+    if raw.startswith("sqlite:///"):
+        raw = raw[len("sqlite:///") :]
+    db_path = Path(raw).resolve()
+
+    assert db_path.parent == project_root, (
+        f"database_path.parent ({db_path.parent}) must equal project_root ({project_root})"
+    )
+    assert db_path.name == "smart_energy.db", (
+        f"database file must be smart_energy.db, got: {db_path.name}"
+    )
+    outside = (project_root.parent / "smart_energy.db").resolve()
+    assert db_path != outside, (
+        f"database must NOT be outside the project: {outside}"
+    )

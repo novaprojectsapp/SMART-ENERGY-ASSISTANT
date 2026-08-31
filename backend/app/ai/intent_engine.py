@@ -46,10 +46,16 @@ INTENT_RULES = [
     {
         "intent": "CURRENT_CURRENT",
         "patterns": [
-            r"current\s*(amp|ampere|current)",
+            r"current\s*(amp|ampere)",
             r"(amp|ampere)s?\s*(am?\s*i|now|current)",
-            r"how\s*much\s*(amp|ampere)",
+            r"how\s*much\s*(amp|ampere|current)",
+            r"how\s*many\s*amps?",
+            r"(amp|ampere)s?\s*(reading|drawing|being\s*used|using)",
             r"what\s*(is|was)\s*the\s*(current|amp)",
+            r"what\s*(is|was)\s*the\s*current\s*(reading|draw|amperage|usage)",
+            r"current\s*amperage",
+            r"amperage",
+            r"amps?\s*now",
         ],
         "period": "NOW",
         "confidence": 0.95,
@@ -101,6 +107,14 @@ INTENT_RULES = [
             r"today.*bill",
             r"how\s*much.*electricity.*(cost|bill|charge|spend)",
             r"how\s*much.*(cost|bill|spend|charge).*today",
+            r"what\s*is\s*my\s*cost",
+            r"what\s*is\s*my\s*electricity\s*cost",
+            r"tell\s*me\s*my\s*cost",
+            r"cost\s*of\s*electricity",
+            r"what\s*(is|am\s*i)\s*(spending|paying)",
+            r"(how\s*much\s*(am\s*i|do\s*i)\s*)?(spend|pay).*(electricity|power)",
+            r"(cost|charge|price)\s*(right\s*now|currently|now)",
+            r"my\s*(electricity\s*)?cost",
         ],
         "period": "TODAY",
         "confidence": 0.92,
@@ -120,15 +134,19 @@ INTENT_RULES = [
     {
         "intent": "MONTHLY_BILL",
         "patterns": [
-            r"(monthly|month).*bill",
-            r"bill.*(monthly|month)",
-            r"how\s*much.*month.*(cost|bill|charge|spend)",
-            r"electricity\s*bill\s*(for\s*)?month",
-            r"(monthly|month).*electricity.*(cost|bill|charge)",
-            r"what.*my\s*(monthly|month).*bill",
+            r"(?<![a-z-])\bmonthly\b.*(bill|cost|charge)",
+            r"(bill|cost|charge).*(?<![a-z-])\bmonthly\b",
+            r"(bill|cost|charge).*(this\s*month|for\s*this\s*month|next\s*month)",
+            r"(this\s*month|for\s*this\s*month|next\s*month).*(bill|cost|charge)",
+            r"how\s*much.*(?:per\s*month|this\s*month|in\s*a\s*month).*(cost|bill|charge|spend)",
+            r"electricity\s*bill\s*(for\s*)?(the\s*)?month(?!s)",
+            r"(one\s*month|(?<![a-z-])\bmonthly\b).*electricity.*(cost|bill|charge)",
+            r"what.*my\s*(monthly|this\s*month).*bill",
+            r"estimate\s*monthly",
+            r"per\s*month\s*(bill|cost|charge)",
         ],
         "period": "MONTHLY",
-        "confidence": 0.9,
+        "confidence": 0.95,
     },
     {
         "intent": "BILL_PREDICTION",
@@ -141,15 +159,22 @@ INTENT_RULES = [
             r"bimonthly.*(bill|cost|charge)",
             r"(bill|cost).*(two[\s-]*month|bimonthly|next|future|predict|estimate)",
             r"estimate.*(bill|cost)",
+            r"what\s*will\s*be\s*the\s*bill\s*(for|be)?\s*2\s*months?",
+            r"bill\s*for\s*(2|two)\s*months?",
+            r"(bimonthly|bi-monthly)\s*bill",
             r"how\s*much.*spending.*electricity",
             r"electricity\s*cost\s*(these\s*days|lately|recently|now)",
             r"(spending|spend|cost|bill).*electricity",
             r"electricity.*(spending|spend|cost|bill|charge|expense)",
             r"how\s*much.*electricity\s*(cost|bill|charge)",
             r"what.*electricity\s*(cost|bill|charge)",
+            r"what\s*(is|will\s*be)\s*my\s*bill",
+            r"what\s*is\s*my\s*(electricity\s*)?bill",
+            r"my\s*bill",
+            r"(bill|cost)\s*for\s*the\s*billing\s*period",
         ],
         "period": "BILLING_PERIOD",
-        "confidence": 0.88,
+        "confidence": 0.92,
     },
     {
         "intent": "BILL_EXPLANATION",
@@ -333,6 +358,7 @@ def classify_intent(text: str) -> Intent:
     normalized = text.lower().strip()
     normalized = re.sub(r"[^\w\s]", " ", normalized)
     normalized = re.sub(r"\s+", " ", normalized).strip()
+    normalized = normalized.replace("bi monthly", "bimonthly")
 
     best_match = None
     best_score = 0
