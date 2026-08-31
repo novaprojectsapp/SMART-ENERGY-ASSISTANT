@@ -1,0 +1,41 @@
+{
+  "tariff_name": "Tamil Nadu Domestic Electricity Tariff",
+  "region": "Tamil Nadu",
+  "type": "domestic",
+  "version": "2024-prototype",
+  "effective_date": "2024-01-01",
+  "currency": "INR",
+  "unit": "kWh",
+  "billing_period_months": 2,
+  "slabs": [
+    {
+      "slab_number": 1,
+      "min_units": 1,
+      "max_units": 100,
+      "rate_per_unit": 0.0,
+      "description": "First 100 units - Free"
+    },
+    {
+      "slab_number": 2,
+      "min_units": 101,
+      "max_units": 200,
+      "rate_per_unit": 2.35,
+      "description": "101-200 units"
+    },
+    {
+      "slab_number": 3,
+      "min_units": 201,
+      "max_units": 500,
+      "rate_per_unit": 4.45,
+      "description": "201-500 units"
+    },
+    {
+      "slab_number": 4,
+      "min_units": 501,
+      "max_units": null,
+      "rate_per_unit": 6.45,
+      "description": "Above 500 units"
+    }
+  ],
+  "notes": "Prototype domestic tariff for Tamil Nadu. Simplified - excludes additional charges like fixed charges, subsidy, taxes, duty etc."
+}

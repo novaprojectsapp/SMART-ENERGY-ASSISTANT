@@ -1,0 +1,253 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Smart Energy Assistant</title>
+    <link rel="stylesheet" href="/css/main.css">
+    <link rel="stylesheet" href="/css/dashboard.css">
+</head>
+<body>
+    <div class="app-layout">
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="sidebar-logo">⚡</div>
+                <div>
+                    <div class="sidebar-title">Smart Energy</div>
+                    <div class="sidebar-subtitle">Assistant</div>
+                </div>
+            </div>
+            <nav class="sidebar-nav">
+                <div class="nav-section">
+                    <div class="nav-section-title">Monitor</div>
+                    <a class="nav-link active" data-page="dashboard" onclick="navigate('dashboard')">
+                        <span class="icon">📊</span> Dashboard
+                    </a>
+                    <a class="nav-link" data-page="analytics" onclick="navigate('analytics')">
+                        <span class="icon">📈</span> Analytics
+                    </a>
+                    <a class="nav-link" data-page="appliance" onclick="navigate('appliance')">
+                        <span class="icon">🔌</span> Appliances
+                    </a>
+                </div>
+                <div class="nav-section">
+                    <div class="nav-section-title">Financial</div>
+                    <a class="nav-link" data-page="cost" onclick="navigate('cost')">
+                        <span class="icon">💰</span> Cost & Billing
+                    </a>
+                    <a class="nav-link" data-page="what-if" onclick="navigate('what-if')">
+                        <span class="icon">🔮</span> What-If
+                    </a>
+                </div>
+                <div class="nav-section">
+                    <div class="nav-section-title">AI</div>
+                    <a class="nav-link" data-page="voice" onclick="navigate('voice')">
+                        <span class="icon">🎙</span> Voice Assistant
+                    </a>
+                    <a class="nav-link" data-page="coach" onclick="navigate('coach')">
+                        <span class="icon">🎓</span> Energy Coach
+                    </a>
+                </div>
+                <div class="nav-section">
+                    <div class="nav-section-title">System</div>
+                    <a class="nav-link" data-page="settings" onclick="navigate('settings')">
+                        <span class="icon">⚙</span> Settings
+                    </a>
+                </div>
+            </nav>
+        </aside>
+
+        <main class="main-content">
+            <header class="main-header">
+                <div class="header-left">
+                    <h1 class="page-title" id="page-title">Dashboard</h1>
+                </div>
+                <div class="header-right">
+                    <div class="device-status-label">
+                        <div class="status-dot" id="status-dot"></div>
+                        <span id="device-status-label">Checking...</span>
+                    </div>
+                </div>
+            </header>
+            <div class="page-content" id="page-content">
+                <!-- Dashboard Content (Default) -->
+                <div id="dashboard-page">
+                    <div class="dashboard-grid" id="live-cards">
+                        <div class="stat-card" style="grid-column:1/-1;text-align:center;padding:40px;">
+                            <div class="loading-spinner"></div>
+                        </div>
+                    </div>
+                    <div id="billing-section"></div>
+                    <div id="appliance-section"></div>
+                    <div id="insights-section"></div>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script src="/js/api.js"></script>
+    <script src="/js/common.js"></script>
+    <script src="/js/charts.js"></script>
+    <script src="/js/dashboard.js"></script>
+    <script src="/js/analytics.js"></script>
+    <script src="/js/appliance.js"></script>
+    <script src="/js/cost.js"></script>
+    <script src="/js/voice.js"></script>
+    <script src="/js/coach.js"></script>
+    <script src="/js/what-if.js"></script>
+    <script>
+        let currentPage = 'dashboard';
+        let destroyFn = null;
+
+        function navigate(page) {
+            if (currentPage === page) return;
+
+            if (destroyFn) {
+                destroyFn();
+                destroyFn = null;
+            }
+
+            document.querySelectorAll('.nav-link').forEach(el => el.classList.remove('active'));
+            const activeLink = document.querySelector(`.nav-link[data-page="${page}"]`);
+            if (activeLink) activeLink.classList.add('active');
+
+            const titles = {
+                dashboard: 'Dashboard',
+                analytics: 'Analytics',
+                appliance: 'Appliances',
+                cost: 'Cost & Billing',
+                voice: 'Voice Assistant',
+                coach: 'Energy Coach',
+                'what-if': 'What-If Simulator',
+                settings: 'Settings',
+            };
+            document.getElementById('page-title').textContent = titles[page] || page;
+            currentPage = page;
+            loadPage(page);
+        }
+
+        function loadPage(page) {
+            const content = document.getElementById('page-content');
+
+            if (page === 'dashboard') {
+                content.innerHTML = `
+                    <div id="dashboard-page">
+                        <div class="dashboard-grid" id="live-cards">
+                            <div class="stat-card" style="grid-column:1/-1;text-align:center;padding:40px;"><div class="loading-spinner"></div></div>
+                        </div>
+                        <div id="billing-section"></div>
+                        <div id="appliance-section"></div>
+                        <div id="insights-section"></div>
+                    </div>`;
+                initDashboard();
+                destroyFn = destroyDashboard;
+            } else if (page === 'analytics') {
+                content.innerHTML = `
+                    <div id="analytics-page">
+                        <div id="analytics-summary"></div>
+                        <div class="dashboard-grid" style="grid-template-columns:1fr 1fr;">
+                            <div id="analytics-daily"></div>
+                            <div id="analytics-patterns"></div>
+                        </div>
+                        <div id="analytics-anomalies"></div>
+                    </div>`;
+                initAnalytics();
+                destroyFn = destroyAnalytics;
+            } else if (page === 'appliance') {
+                content.innerHTML = `
+                    <div id="appliance-page">
+                        <div id="appliance-activity"></div>
+                        <div id="appliance-models"></div>
+                    </div>`;
+                initAppliance();
+            } else if (page === 'cost') {
+                content.innerHTML = `
+                    <div id="cost-page">
+                        <div id="cost-today"></div>
+                        <div id="cost-predict"></div>
+                        <div id="cost-tariff"></div>
+                    </div>`;
+                initCost();
+            } else if (page === 'voice') {
+                content.innerHTML = `
+                    <div id="voice-page">
+                        <div class="voice-container">
+                            <button class="voice-btn" id="voice-mic-btn" onclick="toggleListening()">🎙</button>
+                            <div class="voice-status" id="voice-status"></div>
+                            <input class="voice-text-input" id="voice-text-input" type="text"
+                                   placeholder="Type a question... e.g. 'What is my current power?'"
+                                   autocomplete="off">
+                            <div class="voice-controls">
+                                <button class="btn btn-primary" id="voice-send-btn">Send</button>
+                                <button class="btn btn-secondary" id="voice-speak-btn" onclick="speakResponse(document.getElementById('voice-response').innerText)" disabled>🔊 Speak</button>
+                                <button class="btn btn-secondary" id="voice-stop-btn" onclick="stopSpeaking()" disabled>⏹ Stop</button>
+                            </div>
+                            <div class="voice-response" id="voice-response">
+                                <p style="color:var(--text-muted);">Ask me anything about your energy usage, bills, or appliance activity.</p>
+                            </div>
+                        </div>
+                    </div>`;
+                initVoice();
+            } else if (page === 'coach') {
+                content.innerHTML = `<div id="coach-page"><div id="coach-content"></div></div>`;
+                initCoach();
+            } else if (page === 'what-if') {
+                content.innerHTML = `
+                    <div id="whatif-page">
+                        <div class="section-card">
+                            <div class="section-card-header">
+                                <span class="section-card-title">What-If Simulator</span>
+                            </div>
+                            <div id="whatif-form"></div>
+                            <div id="whatif-results"></div>
+                        </div>
+                    </div>`;
+                initWhatIf();
+            } else if (page === 'settings') {
+                content.innerHTML = `<div id="settings-page"><div id="settings-content"></div></div>`;
+                loadSettings();
+            }
+        }
+
+        async function loadSettings() {
+            const container = document.getElementById('settings-content');
+            try {
+                const s = await api.getSettings();
+                container.innerHTML = `
+                    <div class="section-card">
+                        <div class="section-card-header">
+                            <span class="section-card-title">System Settings</span>
+                        </div>
+                        <div class="settings-row"><span class="label">Environment</span><span class="value">${s.app_env}</span></div>
+                        <div class="settings-row"><span class="label">Log Level</span><span class="value">${s.log_level}</span></div>
+                        <div class="settings-row"><span class="label">Gemini Enabled</span><span class="value ${s.gemini_enabled ? 'enabled' : 'disabled'}">${s.gemini_enabled ? 'Yes' : 'No'}</span></div>
+                        <div class="settings-row"><span class="label">Gemini Model</span><span class="value">${s.gemini_model || 'N/A'}</span></div>
+                        <div class="settings-row"><span class="label">Gemini API Key</span><span class="value">${s.has_gemini_key ? 'Configured' : 'Not Set'}</span></div>
+                    </div>
+                    <div class="section-card">
+                        <div class="section-card-header">
+                            <span class="section-card-title">About</span>
+                        </div>
+                        <div class="settings-row"><span class="label">Version</span><span class="value">1.0.0</span></div>
+                        <div class="settings-row"><span class="label">Architecture</span><span class="value">Local-First</span></div>
+                        <div class="settings-row"><span class="label">Database</span><span class="value">SQLite</span></div>
+                        <div class="settings-row"><span class="label">Backend</span><span class="value">Python FastAPI</span></div>
+                        <div class="settings-row"><span class="label">Frontend</span><span class="value">HTML/CSS/JS</span></div>
+                    </div>`;
+            } catch (e) {
+                showError(container, e.message);
+            }
+        }
+
+        document.addEventListener('DOMContentLoaded', () => {
+            loadPage('dashboard');
+            setInterval(async () => {
+                try {
+                    const devices = await api.getDevices();
+                    updateDeviceStatus(devices);
+                } catch(e) {}
+            }, 10000);
+        });
+    </script>
+</body>
+</html>
