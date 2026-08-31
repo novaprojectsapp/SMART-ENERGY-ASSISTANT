@@ -10,7 +10,7 @@ load_dotenv(BASE_DIR / ".env")
 class Settings(BaseSettings):
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
-    DATABASE_URL: str = f"sqlite:///{BASE_DIR.parent / 'smart_energy.db'}"
+    DATABASE_URL: str = f"sqlite:///{BASE_DIR / 'smart_energy.db'}"
     DEVICE_API_KEY: str = "change-me-in-production"
     GEMINI_API_KEY: str = ""
     GEMINI_MODEL: str = "gemini-2.0-flash"

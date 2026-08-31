@@ -52,6 +52,20 @@ python simulator/simulator.py --mode varying --interval 5
 python -m pytest backend/tests/test_api.py -v
 ```
 
+## Database
+
+The application uses a local SQLite database located in the **project root**:
+
+```
+smart-energy-assistant/
+└── smart_energy.db
+```
+
+- **Database type**: SQLite (local, no cloud required)
+- **Location**: project root
+- **Created/used by**: the Python FastAPI backend
+- The database path is derived from the project root at runtime, so the entire project folder can be copied to another machine and will work without reconfiguration.
+
 ## Project Structure
 
 ```
@@ -76,9 +90,14 @@ smart-energy-assistant/
 │   ├── css/              # Styles
 │   └── js/               # Scripts
 ├── simulator/            # PZEM data simulator
-├── ai/                   # ML pipeline
+├── ai/                   # ML pipeline (reserved for hardware)
 ├── data/                 # Data directories
-├── docs/                 # Documentation
+├── database/
+│   └── migrations/       # SQL migrations (reserved)
+├── docs/
+│   └── hardware-validation/  # Reserved for hardware docs
+├── scripts/              # Reserved for helper scripts
+├── smart_energy.db       # SQLite database (runtime)
 └── requirements.txt
 ```
 
