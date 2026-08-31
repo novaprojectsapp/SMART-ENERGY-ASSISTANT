@@ -723,3 +723,7 @@
 .day-chk { font-size: 12px; display: inline-flex; align-items: center; gap: 5px; }
 .sched-actions { display: flex; gap: 8px; align-items: center; }
 .sched-footnote { font-size: 11px; color: var(--text-muted); margin-top: 10px; }
+.sched-form .time-pair { display: flex; gap: 14px; grid-column: 1 / -1; }
+.sched-form .time-pair label { flex: 1; }
+.sched-hint { grid-column: 1 / -1; font-size: 11px; color: var(--text-muted); }
+.next-col { font-size: 12px; white-space: nowrap; color: var(--text-primary); }

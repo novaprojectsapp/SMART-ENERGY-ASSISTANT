@@ -121,6 +121,64 @@ def parse_time(text: str) -> str | None:
     return None
 
 
+def parse_time_pair(text: str) -> tuple[str | None, str | None]:
+    """Extract (on_time, off_time) from an ON/OFF scheduling phrase.
+
+    Handles forms like:
+      - "turn on bulb 1 at 6 PM and turn it off at 11 PM"
+      - "schedule bulb 1 from 6 PM to 11 PM every day"
+      - "run bulb 2 from 7 PM to 10 PM Monday and Friday"
+    Returns (on_time, off_time); missing values are None.
+    """
+    normalized = normalize_text(text)
+
+    # Range form: "from T1 to T2" or "T1 to T2". parse_time ignores trailing
+    # words, so reading the tail after "to " yields the second time reliably.
+    m = re.search(r"\bfrom\s+(.+?)\s+to\s+", normalized)
+    if m:
+        t1 = parse_time(m.group(1))
+        t2 = parse_time(normalized[m.end():])
+        if t1 and t2:
+            return t1, t2
+    m = re.search(r"\b(on\s+|at\s+)?(.+?)\s+to\s+", normalized)
+    if m:
+        t1 = parse_time(m.group(2))
+        t2 = parse_time(normalized[m.end():])
+        if t1 and t2:
+            return t1, t2
+
+    # Position-based: find each on/off action verb (allowing pronouns), then
+    # read the first time that follows it before the next action verb.
+    verb_pattern = re.compile(
+        r"\b(turn|switch|set|go|start|stop|run)\s+"
+        r"(?:(?:it|them|this|these|that|the)\s+)?"
+        r"(on|off)\b"
+    )
+    matches = list(verb_pattern.finditer(normalized))
+    on_time = None
+    off_time = None
+    for i, m in enumerate(matches):
+        bucket = m.group(2)
+        segment_end = matches[i + 1].start() if i + 1 < len(matches) else len(normalized)
+        following = normalized[m.end():segment_end]
+        t = parse_time(following) if following else None
+        if t is None:
+            continue
+        if bucket == "on" and on_time is None:
+            on_time = t
+        elif bucket == "off" and off_time is None:
+            off_time = t
+
+    # Single-time fallbacks driven by the leading action.
+    if on_time is None and off_time is None:
+        only = parse_time(normalized)
+        if re.search(r"\b(turn|switch|set|go|stop|run)\s+(?:(?:it|them|this|these|that|the)\s+)?off\b", normalized):
+            return None, only
+        return only, None
+
+    return on_time, off_time
+
+
 def parse_recurrence(text: str) -> tuple[str, list[int] | None]:
     """Return (schedule_type, days_of_week or None)."""
     if re.search(r"\b(once|one\s*time|tomorrow)\b", text):
@@ -154,12 +212,20 @@ def extract_draft(text: str) -> dict:
         action = "OFF"
 
     schedule_type, days = parse_recurrence(normalized)
-    start_time = parse_time(normalized)
+    on_time, off_time = parse_time_pair(normalized)
+
+    # A range/pair without an explicit on/off verb still leads with ON
+    # (e.g. "schedule bulb 1 from 7 PM to 10 PM").
+    if action is None and on_time and off_time:
+        action = "ON"
+
+    start_time = on_time
 
     return {
         "appliance_ref": extract_appliance_ref(normalized),
         "action": action,
         "start_time": start_time,
+        "off_time": off_time,
         "schedule_type": schedule_type,
         "days_of_week": days,
     }

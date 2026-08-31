@@ -96,6 +96,15 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
         if not merged.get("action") and previous.get("action"):
             merged["action"] = previous["action"]
 
+        # Multi-turn ON/OFF pair: a follow-up "turn it off at 11 PM" supplies an
+        # off_time but no start_time. Keep the previously-established ON time so
+        # the pair is complete.
+        if merged.get("off_time") and not merged.get("start_time") and previous.get("start_time"):
+            merged["start_time"] = previous["start_time"]
+        # A complete pair leads with ON.
+        if merged.get("off_time") and merged.get("start_time"):
+            merged["action"] = "ON"
+
         question = actions.maybe_clarify(merged)
         if question:
             actions.save_draft(session_key, merged)

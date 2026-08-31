@@ -36,6 +36,19 @@ function fmtDays(days) {
     return days.map(d => dayName(d)).join(', ');
 }
 
+function formatTimeShort(iso) {
+    if (!iso) return '—';
+    try {
+        const d = new Date(iso);
+        if (isNaN(d.getTime())) return '—';
+        const hh = String(d.getHours()).padStart(2, '0');
+        const mm = String(d.getMinutes()).padStart(2, '0');
+        return `${hh}:${mm}`;
+    } catch (e) {
+        return '—';
+    }
+}
+
 function renderScheduler(container, commands) {
     const controllable = schedulerAppliances.filter(a => a.control_capable);
 
@@ -68,12 +81,19 @@ function renderScheduler(container, commands) {
         schedulerSchedules.forEach(s => {
             const app = schedulerAppliances.find(a => a.id === s.appliance_id);
             const appName = app ? app.name : s.appliance_id;
+            const timeStr = s.off_time
+                ? `ON ${s.on_time} → OFF ${s.off_time}`
+                : `${s.action} ${s.start_time}`;
+            const nextStr = s.off_time
+                ? `${s.next_on_at ? 'ON ' + formatTimeShort(s.next_on_at) : '—'} / ${s.next_off_at ? 'OFF ' + formatTimeShort(s.next_off_at) : '—'}`
+                : (s.next_execution_at ? formatTimeShort(s.next_execution_at) : '—');
             rows += `
                 <tr>
                     <td>${appName}</td>
                     <td><span class="badge ${s.action === 'ON' ? 'badge-on' : 'badge-off'}">${s.action}</span></td>
-                    <td>${s.start_time}${s.end_time ? '–' + s.end_time : ''}</td>
+                    <td>${timeStr}</td>
                     <td>${s.schedule_type} · ${fmtDays(s.days_of_week)}</td>
+                    <td class="next-col">${nextStr}</td>
                     <td><span class="badge ${s.enabled ? 'badge-on' : 'badge-off'}">${s.enabled ? 'Enabled' : 'Disabled'}</span></td>
                     <td class="sched-actions">
                         <button class="btn btn-secondary btn-sm" onclick="editSchedule('${s.id}')">Edit</button>
@@ -83,7 +103,7 @@ function renderScheduler(container, commands) {
                 </tr>`;
         });
         schedRows = `<div style="overflow-x:auto;"><table class="slab-table">
-            <thead><tr><th>Appliance</th><th>Action</th><th>Time</th><th>Repeat</th><th>Status</th><th>Actions</th></tr></thead>
+            <thead><tr><th>Appliance</th><th>Action</th><th>On / Off Time</th><th>Repeat</th><th>Next</th><th>Status</th><th>Actions</th></tr></thead>
             <tbody>${rows}</tbody></table></div>`;
     }
 
@@ -194,8 +214,11 @@ function showAddSchedule() {
             <div class="section-card-header"><span class="section-card-title">Add Schedule</span></div>
             <form id="add-schedule-form" class="sched-form">
                 <label>Appliance <select name="appliance_id" required>${appOptions}</select></label>
-                <label>Action <select name="action"><option value="ON">ON</option><option value="OFF">OFF</option></select></label>
-                <label>Time <input name="start_time" type="time" required></label>
+                <div class="time-pair">
+                    <label>ON Time <input name="on_time" type="time" required></label>
+                    <label>OFF Time <input name="off_time" type="time" placeholder="optional"></label>
+                </div>
+                <div class="sched-hint">Set both ON and OFF times for an automatic on/off pair. Overnight pairs (e.g. ON 23:00 → OFF 06:00) are allowed — the OFF fires the next day.</div>
                 <label>Repeat <select name="schedule_type" onchange="toggleDays(this.value)">
                     <option value="DAILY">Every day (Daily)</option>
                     <option value="WEEKLY">Specific days (Weekly)</option>
@@ -215,9 +238,10 @@ function showAddSchedule() {
         const days = Array.from(f.querySelectorAll('input[name="wday"]:checked')).map(x => parseInt(x.value, 10));
         const payload = {
             appliance_id: f.appliance_id.value,
-            action: f.action.value,
+            action: 'ON',
             schedule_type: f.schedule_type.value,
-            start_time: f.start_time.value,
+            on_time: f.on_time.value,
+            off_time: f.off_time.value || null,
             days_of_week: f.schedule_type.value === 'WEEKLY' ? days : [],
             enabled: f.enabled.checked,
         };
@@ -285,8 +309,10 @@ function editSchedule(id) {
             <div class="section-card-header"><span class="section-card-title">Edit Schedule</span></div>
             <form id="edit-schedule-form" class="sched-form">
                 <label>Appliance <select name="appliance_id" required>${appOptions}</select></label>
-                <label>Action <select name="action"><option value="ON" ${s.action === 'ON' ? 'selected' : ''}>ON</option><option value="OFF" ${s.action === 'OFF' ? 'selected' : ''}>OFF</option></select></label>
-                <label>Time <input name="start_time" type="time" value="${s.start_time}" required></label>
+                <div class="time-pair">
+                    <label>ON Time <input name="on_time" type="time" value="${s.on_time || s.start_time}" required></label>
+                    <label>OFF Time <input name="off_time" type="time" value="${s.off_time || ''}"></label>
+                </div>
                 <label>Repeat <select name="schedule_type" onchange="toggleDaysEdit(this.value)">
                     <option value="DAILY" ${s.schedule_type === 'DAILY' ? 'selected' : ''}>Every day</option>
                     <option value="WEEKLY" ${s.schedule_type === 'WEEKLY' ? 'selected' : ''}>Specific days</option>
@@ -306,9 +332,10 @@ function editSchedule(id) {
         const days = Array.from(f.querySelectorAll('input[name="wday"]:checked')).map(x => parseInt(x.value, 10));
         const payload = {
             appliance_id: f.appliance_id.value,
-            action: f.action.value,
+            action: 'ON',
             schedule_type: f.schedule_type.value,
-            start_time: f.start_time.value,
+            on_time: f.on_time.value,
+            off_time: f.off_time.value || null,
             days_of_week: f.schedule_type.value === 'WEEKLY' ? days : [],
             enabled: f.enabled.checked,
         };

@@ -45,19 +45,59 @@ def _voice(text, device_id):
 def test_voice_create_schedule_confirms():
     did = _device("vsched-dev")
     _appliance("Pump 1", "PUMP", 1, did)
-    d = _voice("turn on pump 1 at 6 PM every day", did)
+    d = _voice("turn on pump 1 at 6 PM and turn it off at 11 PM every day", did)
     assert d["intent"] == "CREATE_SCHEDULE"
     assert "Scheduled" in d["response"]
     assert "at 18:00" in d["response"]
-    # Schedule persisted
+    assert "at 23:00" in d["response"]
+    # Schedule persisted as an ON/OFF pair (start_time=on, end_time=off)
     scheds = client.get("/api/v1/schedules").json()
     assert any(s["appliance_id"] for s in scheds)
+    pair = [s for s in scheds if s["appliance_id"]][0]
+    assert pair["on_time"] == "18:00"
+    assert pair["off_time"] == "23:00"
+
+
+def test_voice_create_pair_from_to():
+    did = _device("vpair-dev")
+    _appliance("Bulb 1", "BULB", 1, did)
+    d = _voice("schedule bulb 1 from 7 PM to 10 PM Monday and Friday", did)
+    assert d["intent"] == "CREATE_SCHEDULE"
+    assert "Scheduled" in d["response"]
+    assert "at 19:00" in d["response"]
+    assert "at 22:00" in d["response"]
+    scheds = client.get("/api/v1/schedules").json()
+    pair = [s for s in scheds if s["on_time"] == "19:00" and s["off_time"] == "22:00"]
+    assert pair
+    assert pair[0]["schedule_type"] == "WEEKLY"
+
+
+def test_voice_clarify_missing_off_time():
+    did = _device("vclarif-off-dev")
+    _appliance("Fan 1", "FAN", 1, did)
+    d = _voice("turn on fan 1 at 6 PM", did)
+    assert d["intent"] == "CREATE_SCHEDULE"
+    assert "What time should I turn it off" in d["response"]
+    # No incomplete schedule created for the requested ON time.
+    scheds = client.get("/api/v1/schedules").json()
+    assert not any(s["on_time"] == "18:00" and s["off_time"] is None for s in scheds)
+
+
+def test_voice_clarify_missing_on_time():
+    did = _device("vclarif-on-dev")
+    _appliance("Fan 2", "FAN", 2, did)
+    d = _voice("turn off fan 2 at 11 PM", did)
+    assert d["intent"] == "CREATE_SCHEDULE"
+    assert "What time should I turn it on" in d["response"]
+    # No incomplete schedule created for the requested OFF time.
+    scheds = client.get("/api/v1/schedules").json()
+    assert not any(s["off_time"] == "23:00" and s["on_time"] is None for s in scheds)
 
 
 def test_voice_manual_on_honest_simulated():
     did = _device("vfan-dev")
-    _appliance("Fan 1", "FAN", 1, did)
-    d = _voice("turn on fan 1", did)
+    _appliance("Fan 3", "FAN", 3, did)
+    d = _voice("turn on fan 3", did)
     assert d["intent"] == "MANUAL_APPLIANCE_ON"
     assert "Hardware control is not connected yet" in d["response"]
     # Control command recorded as SIMULATED

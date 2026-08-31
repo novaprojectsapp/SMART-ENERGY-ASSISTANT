@@ -166,14 +166,22 @@ def list_schedules(db: Session = Depends(get_db)):
     result = []
     for s in schedules:
         scheduler.refresh_next_execution(s)
-        result.append(s)
+        result.append(_to_schedule_response(s, scheduler))
     db.commit()
     return result
 
 
 @router.post("/schedules", response_model=ScheduleResponse, status_code=201)
 def create_schedule(schedule_in: ScheduleCreate, db: Session = Depends(get_db)):
-    _validate_schedule(schedule_in.appliance_id, schedule_in.action, schedule_in.start_time, schedule_in.end_time, db)
+    _validate_schedule(
+        schedule_in.appliance_id,
+        schedule_in.action,
+        schedule_in.start_time,
+        schedule_in.end_time,
+        schedule_in.schedule_type,
+        schedule_in.days_of_week,
+        db,
+    )
     schedule = Schedule(
         appliance_id=schedule_in.appliance_id,
         action=schedule_in.action,
@@ -190,7 +198,7 @@ def create_schedule(schedule_in: ScheduleCreate, db: Session = Depends(get_db)):
     scheduler.refresh_next_execution(schedule)
     db.commit()
     db.refresh(schedule)
-    return schedule
+    return _to_schedule_response(schedule, SchedulerService(db))
 
 
 @router.get("/schedules/{schedule_id}", response_model=ScheduleResponse)
@@ -201,7 +209,7 @@ def get_schedule(schedule_id: str, db: Session = Depends(get_db)):
     scheduler = SchedulerService(db)
     scheduler.refresh_next_execution(schedule)
     db.commit()
-    return schedule
+    return _to_schedule_response(schedule, SchedulerService(db))
 
 
 @router.put("/schedules/{schedule_id}", response_model=ScheduleResponse)
@@ -215,6 +223,11 @@ def update_schedule(schedule_id: str, schedule_in: ScheduleUpdate, db: Session =
         days = data.pop("days_of_week")
         schedule.days_of_week = json.dumps(days)
 
+    # on_time/off_time are API aliases for start_time/end_time; drop the aliases
+    # so they aren't set as unmapped attributes on the model.
+    data.pop("on_time", None)
+    data.pop("off_time", None)
+
     if "appliance_id" in data and data["appliance_id"]:
         if not db.query(Appliance).filter(Appliance.id == data["appliance_id"]).first():
             raise HTTPException(status_code=404, detail="Appliance not found")
@@ -224,13 +237,21 @@ def update_schedule(schedule_id: str, schedule_in: ScheduleUpdate, db: Session =
             setattr(schedule, key, value)
 
     # Revalidate final state
-    _validate_schedule(schedule.appliance_id, schedule.action, schedule.start_time, schedule.end_time, db)
+    _validate_schedule(
+        schedule.appliance_id,
+        schedule.action,
+        schedule.start_time,
+        schedule.end_time,
+        schedule.schedule_type,
+        json.loads(schedule.days_of_week or "[]"),
+        db,
+    )
 
     scheduler = SchedulerService(db)
     scheduler.refresh_next_execution(schedule)
     db.commit()
     db.refresh(schedule)
-    return schedule
+    return _to_schedule_response(schedule, SchedulerService(db))
 
 
 @router.post("/schedules/{schedule_id}/enable", response_model=ScheduleResponse)
@@ -243,7 +264,7 @@ def enable_schedule(schedule_id: str, db: Session = Depends(get_db)):
     scheduler.refresh_next_execution(schedule)
     db.commit()
     db.refresh(schedule)
-    return schedule
+    return _to_schedule_response(schedule, SchedulerService(db))
 
 
 @router.post("/schedules/{schedule_id}/disable", response_model=ScheduleResponse)
@@ -255,7 +276,7 @@ def disable_schedule(schedule_id: str, db: Session = Depends(get_db)):
     schedule.next_execution_at = None
     db.commit()
     db.refresh(schedule)
-    return schedule
+    return _to_schedule_response(schedule, SchedulerService(db))
 
 
 @router.delete("/schedules/{schedule_id}")
@@ -268,7 +289,7 @@ def delete_schedule(schedule_id: str, db: Session = Depends(get_db)):
     return {"status": "DELETED", "id": schedule_id}
 
 
-def _validate_schedule(appliance_id, action, start_time, end_time, db):
+def _validate_schedule(appliance_id, action, start_time, end_time, schedule_type="DAILY", days_of_week=None, db=None):
     appliance = db.query(Appliance).filter(Appliance.id == appliance_id).first()
     if not appliance:
         raise HTTPException(status_code=404, detail="Appliance not found")
@@ -276,10 +297,49 @@ def _validate_schedule(appliance_id, action, start_time, end_time, db):
         raise HTTPException(status_code=422, detail="Invalid action: must be ON or OFF")
     if not start_time:
         raise HTTPException(status_code=422, detail="start_time is required")
-    if end_time and end_time <= start_time:
-        raise HTTPException(status_code=422, detail="end_time must be after start_time")
+    # Same-day equality check: an ON and OFF at the exact same instant is rejected.
+    # Overnight pairs (OFF earlier than ON, e.g. ON 23:00 / OFF 06:00) are allowed.
+    if end_time and end_time == start_time:
+        raise HTTPException(status_code=422, detail="ON time and OFF time cannot be the same.")
+    if schedule_type == "WEEKLY" and not days_of_week:
+        raise HTTPException(
+            status_code=422,
+            detail="Weekly schedules require at least one day of the week.",
+        )
+    if schedule_type == "ONCE" and False:
+        # ONCE schedules currently anchor to the current day; no date field is
+        # persisted, so a date-specific check is not applicable.
+        pass
     if not appliance.control_capable:
         raise HTTPException(status_code=400, detail="Appliance is not control capable")
+
+
+def _to_schedule_response(schedule, scheduler):
+    """Build a ScheduleResponse including ON/OFF times and next ON/OFF datetimes."""
+    now = utcnow()
+    next_on = scheduler.next_on_at(schedule, now)
+    next_off = scheduler.next_off_at(schedule, now)
+    return ScheduleResponse(
+        id=schedule.id,
+        appliance_id=schedule.appliance_id,
+        action=schedule.action,
+        schedule_type=schedule.schedule_type,
+        start_time=schedule.start_time,
+        end_time=schedule.end_time,
+        days_of_week=json.loads(schedule.days_of_week or "[]")
+        if isinstance(schedule.days_of_week, str)
+        else (schedule.days_of_week or []),
+        enabled=schedule.enabled,
+        timezone=schedule.timezone,
+        created_at=schedule.created_at,
+        updated_at=schedule.updated_at,
+        last_executed_at=schedule.last_executed_at,
+        next_execution_at=schedule.next_execution_at,
+        on_time=schedule.start_time,
+        off_time=schedule.end_time,
+        next_on_at=next_on,
+        next_off_at=next_off,
+    )
 
 
 # ---------------------------------------------------------------------------

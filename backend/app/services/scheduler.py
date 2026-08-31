@@ -4,13 +4,22 @@ Scheduler engine.
 Finds due schedules, creates control commands, records execution, and
 computes next execution times. Timezone-aware (default Asia/Kolkata).
 
+A schedule can represent either:
+  - a single event (action ON or OFF) at start_time, or
+  - an ON/OFF pair: ON at start_time and OFF at end_time.
+
+Pair schedules produce TWO independently-tracked events (ON event, OFF event)
+for each cycle. Overnight pairs (OFF earlier than ON, e.g. ON 23:00 / OFF 06:00)
+interpret the OFF as occurring the following day. Duplicate execution is
+prevented: each event fires at most once per cycle.
+
 The scheduler NEVER touches GPIO directly. It produces a ControlCommand
 that a hardware adapter (ESP32 Control) would later deliver to a relay.
 Until that adapter has hardware, commands remain PENDING/SIMULATED.
 """
 import json
 import logging
-from datetime import datetime, time, timedelta, timezone
+from datetime import date, datetime, time, timedelta, timezone
 from zoneinfo import ZoneInfo
 
 from sqlalchemy.orm import Session
@@ -44,57 +53,16 @@ class SchedulerService:
         except Exception:
             return ZoneInfo(DEFAULT_TZ)
 
-    def compute_next_execution(self, schedule: Schedule, now: datetime) -> datetime | None:
-        """Return the next execution datetime (UTC) for a schedule given a now DateTime (aware)."""
-        if not schedule.enabled:
+    def _on_time(self, schedule: Schedule) -> time:
+        return time.fromisoformat(schedule.start_time)
+
+    def _off_time(self, schedule: Schedule) -> time | None:
+        if not schedule.end_time:
             return None
-        try:
-            zone = self.get_zone(schedule)
-            now = _naive_utc(now)
-            local_now = now.replace(tzinfo=timezone.utc).astimezone(zone)
-            t = time.fromisoformat(schedule.start_time)
-        except Exception:
-            return None
+        return time.fromisoformat(schedule.end_time)
 
-        if schedule.schedule_type == "ONCE":
-            candidate = local_now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-            if candidate <= local_now:
-                return None  # one-time occurrence passed
-            return _naive_utc(candidate.astimezone(timezone.utc))
-
-        if schedule.schedule_type == "DAILY":
-            candidate = local_now.replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-            if candidate <= local_now:
-                candidate = candidate + timedelta(days=1)
-            return _naive_utc(candidate.astimezone(timezone.utc))
-
-        if schedule.schedule_type == "WEEKLY":
-            days = self._parse_days(schedule)
-            if not days:
-                days = list(range(7))
-            for offset in range(1, 8):
-                day = (local_now.weekday() + offset) % 7
-                if day in days:
-                    candidate = (local_now + timedelta(days=offset)).replace(hour=t.hour, minute=t.minute, second=0, microsecond=0)
-                    if candidate > local_now:
-                        return _naive_utc(candidate.astimezone(timezone.utc))
-            return None
-
-        if schedule.schedule_type == "AFTER_DURATION":
-            # Requires end_time; treat as daily occurrence at end_time if present,
-            # otherwise schedule_type is not fully supported -> None.
-            if not schedule.end_time:
-                return None
-            try:
-                te = time.fromisoformat(schedule.end_time)
-            except Exception:
-                return None
-            candidate = local_now.replace(hour=te.hour, minute=te.minute, second=0, microsecond=0)
-            if candidate <= local_now:
-                candidate = candidate + timedelta(days=1)
-            return _naive_utc(candidate.astimezone(timezone.utc))
-
-        return None
+    def _has_off(self, schedule: Schedule) -> bool:
+        return bool(schedule.end_time)
 
     def _parse_days(self, schedule: Schedule) -> list[int]:
         try:
@@ -105,13 +73,128 @@ class SchedulerService:
             pass
         return []
 
+    def _day_allowed(self, schedule: Schedule, d: date) -> bool:
+        if schedule.schedule_type == "WEEKLY":
+            return d.weekday() in self._parse_days(schedule)
+        if schedule.schedule_type == "ONCE":
+            return True
+        return True  # DAILY / AFTER_DURATION
+
+    # ------------------------------------------------------------------
+    # Cycle / event computation (times are naive-UTC datetimes)
+    # ------------------------------------------------------------------
+    def _cycle_local(self, schedule: Schedule, day: date) -> tuple[datetime, datetime | None]:
+        """Return (on_datetime_local, off_datetime_local) for the cycle anchored
+        at local date `day`."""
+        zone = self.get_zone(schedule)
+        on_t = self._on_time(schedule)
+        on_local = datetime.combine(day, on_t)
+        on_utc = _naive_utc(on_local.astimezone(zone).astimezone(timezone.utc))
+
+        off_t = self._off_time(schedule)
+        if off_t is None:
+            return on_utc, None
+        # Overnight: OFF time earlier than (or equal) to ON time -> next day.
+        off_day = day + timedelta(days=1) if off_t <= on_t else day
+        off_local = datetime.combine(off_day, off_t)
+        off_utc = _naive_utc(off_local.astimezone(zone).astimezone(timezone.utc))
+        return on_utc, off_utc
+
+    def _next_anchor_day(self, schedule: Schedule, local_today: date) -> date | None:
+        """First allowed day on-or-after local_today, or None for a spent ONCE."""
+        if schedule.schedule_type == "ONCE":
+            # ONCE anchors to today (its single scheduled date). If today's cycle
+            # is fully in the past the caller advances; there is no 'next day'.
+            return local_today
+        for offset in range(0, 8):
+            d = local_today + timedelta(days=offset)
+            if self._day_allowed(schedule, d):
+                return d
+        return None
+
+    def next_cycle(self, schedule: Schedule, now: datetime) -> tuple[datetime, datetime | None] | None:
+        """Return the next pending cycle (on_utc, off_utc) after `now`, or None.
+
+        For ONCE schedules that have fully passed, returns None. For DAILY/WEEKLY
+        the cycle is advanced to the first cycle with a pending event."""
+        if not schedule.enabled:
+            return None
+        zone = self.get_zone(schedule)
+        local_now = _naive_utc(now).replace(tzinfo=timezone.utc).astimezone(zone)
+        today = local_now.date()
+
+        for offset in range(0, 31):
+            anchor = self._next_anchor_day(schedule, today + timedelta(days=offset))
+            if anchor is None:
+                return None
+            on_utc, off_utc = self._cycle_local(schedule, anchor)
+            # Determine if this cycle has a pending event after now.
+            pending_on = on_utc is not None and on_utc > _naive_utc(now) if on_utc else False
+            pending_off = off_utc is not None and off_utc > _naive_utc(now) if off_utc else False
+            if pending_on or pending_off:
+                return on_utc, off_utc
+            # This cycle is fully in the past (or OFF is the only pending and it's past).
+            if schedule.schedule_type == "ONCE":
+                # One-time schedule fully executed -> no more cycles.
+                return None
+        return None
+
+    def next_event(self, schedule: Schedule, now: datetime) -> tuple[datetime, str] | None:
+        """Return (next_event_utc, action) where action is 'ON' or 'OFF'."""
+        cycle = self.next_cycle(schedule, now)
+        if not cycle:
+            return None
+        on_utc, off_utc = cycle
+        now_u = _naive_utc(now)
+        if on_utc and on_utc > now_u:
+            return on_utc, "ON"
+        if off_utc and off_utc > now_u:
+            return off_utc, "OFF"
+        return None
+
+    def each_cycle(self, schedule: Schedule, now: datetime):
+        """Yield successive (anchor_day, on_utc, off_utc) cycles after `now`."""
+        now_u = _naive_utc(now)
+        zone = self.get_zone(schedule)
+        if not schedule.enabled:
+            return
+        local_now = now_u.replace(tzinfo=timezone.utc).astimezone(zone)
+        today = local_now.date()
+        for offset in range(0, 61):
+            anchor = self._next_anchor_day(schedule, today + timedelta(days=offset))
+            if anchor is None:
+                break
+            yield anchor, *self._cycle_local(schedule, anchor)
+
+    def next_on_at(self, schedule: Schedule, now: datetime) -> datetime | None:
+        """Next future ON event (naive UTC), or None."""
+        now_u = _naive_utc(now)
+        for _anchor, on_utc, _off in self.each_cycle(schedule, now):
+            if on_utc and on_utc > now_u:
+                return on_utc
+        return None
+
+    def next_off_at(self, schedule: Schedule, now: datetime) -> datetime | None:
+        """Next future OFF event (naive UTC), or None."""
+        if not self._has_off(schedule):
+            return None
+        now_u = _naive_utc(now)
+        for _anchor, _on, off_utc in self.each_cycle(schedule, now):
+            if off_utc and off_utc > now_u:
+                return off_utc
+        return None
+
     def refresh_next_execution(self, schedule: Schedule, now: datetime | None = None):
+        """Set next_execution_at to the next pending event (ON or OFF), or None."""
         now = _naive_utc(now) or _naive_utc(utcnow())
-        schedule.next_execution_at = self.compute_next_execution(schedule, now)
+        event = self.next_event(schedule, now)
+        schedule.next_execution_at = event[0] if event else None
         return schedule
 
+    # ------------------------------------------------------------------
+    # Due detection (uses the existing next_execution_at machinery)
+    # ------------------------------------------------------------------
     def find_due_schedules(self, now: datetime | None = None) -> list[Schedule]:
-        """Return enabled schedules whose next_execution_at is <= now and not yet executed."""
         now = _naive_utc(now) or _naive_utc(utcnow())
         return (
             self.db.query(Schedule)
@@ -136,7 +219,7 @@ class SchedulerService:
         now = _naive_utc(now)
         if schedule.last_executed_at is None:
             return False
-        # A schedule should not fire twice within the same minute window for the same occurrence.
+        # A schedule should not fire twice within the same minute window for the same event.
         window_start = now - timedelta(minutes=1)
         return schedule.last_executed_at >= window_start
 
@@ -165,22 +248,26 @@ class SchedulerService:
             logger.warning("Schedule %s references missing appliance; disabled", schedule.id)
             return None
 
+        now = _naive_utc(now)
+        # Determine which event is firing now: the stored next_execution_at tells us.
+        action = self._event_action_at(schedule, now)
+
         hardware = ESP32ControlService()
-        hw = hardware.turn_on(appliance) if schedule.action == "ON" else hardware.turn_off(appliance)
+        hw = hardware.turn_on(appliance) if action == "ON" else hardware.turn_off(appliance)
 
         if hw.get("status") == HARDWARE_CONTROL_NOT_AVAILABLE:
             status = "PENDING"
             message = "SIMULATED: %s would turn %s. Hardware control is not connected yet." % (
                 appliance.name,
-                schedule.action,
+                action,
             )
         else:
             status = "SENT"
-            message = "%s command sent to hardware for %s." % (schedule.action, appliance.name)
+            message = "%s command sent to hardware for %s." % (action, appliance.name)
 
         cmd = ControlCommand(
             appliance_id=appliance.id,
-            action=schedule.action,
+            action=action,
             source="SCHEDULE",
             status=status,
             message=message,
@@ -189,5 +276,29 @@ class SchedulerService:
 
         schedule.last_executed_at = now
         self.refresh_next_execution(schedule, now)
-        logger.info("Schedule %s executed: %s %s", schedule.id, appliance.name, schedule.action)
+        logger.info("Schedule %s executed: %s %s", schedule.id, appliance.name, action)
         return cmd
+
+    def _event_action_at(self, schedule: Schedule, now: datetime) -> str:
+        """Return the schedule event ('ON' or 'OFF') that was pending at `now`.
+
+        Determines which event fired by matching next_execution_at against the
+        cycle's ON/OFF times. Anchors are checked across neighbouring days so
+        overnight pairs (OFF on the day after ON) resolve correctly.
+        """
+        pending = schedule.next_execution_at
+        if pending is None:
+            return schedule.action
+        pending_u = _naive_utc(pending)
+        zone = self.get_zone(schedule)
+        local_day = pending_u.replace(tzinfo=timezone.utc).astimezone(zone).date()
+        for offset in range(-1, 2):
+            day = local_day + timedelta(days=offset)
+            on_utc, off_utc = self._cycle_local(schedule, day)
+            if on_utc and _naive_utc(on_utc) == pending_u:
+                return "ON"
+            if off_utc and _naive_utc(off_utc) == pending_u:
+                return "OFF"
+        if not self._has_off(schedule):
+            return schedule.action
+        return "ON"

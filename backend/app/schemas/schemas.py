@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field, field_validator, field_serializer
+from pydantic import BaseModel, Field, field_validator, field_serializer, model_validator
 import json
 from typing import Optional
 from datetime import datetime, timezone
@@ -123,13 +123,31 @@ class ApplianceResponse(BaseModel):
 
 class ScheduleCreate(BaseModel):
     appliance_id: str = Field(..., min_length=1, max_length=64)
-    action: str = Field(..., pattern="^(ON|OFF)$")
+    action: str = Field(default="ON", pattern="^(ON|OFF)$")
     schedule_type: str = Field(default="DAILY", pattern="^(ONCE|DAILY|WEEKLY|AFTER_DURATION)$")
-    start_time: str = Field(..., pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    start_time: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     end_time: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
     days_of_week: list[int] = Field(default_factory=list, min_length=0, max_length=7)
     enabled: bool = True
     timezone: str = Field(default="Asia/Kolkata", max_length=40)
+    on_time: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    off_time: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+    @model_validator(mode="after")
+    def _apply_pair_times(self):
+        # Support the ON/OFF pair concept: on_time -> start_time, off_time -> end_time.
+        # Prefer explicit on_time/off_time, else fall back to start_time/end_time.
+        if self.on_time is not None:
+            self.start_time = self.on_time
+        if self.off_time is not None:
+            self.end_time = self.off_time
+        # A schedule needs an ON time (start). Reject if none supplied.
+        if not self.start_time:
+            raise ValueError("start_time or on_time is required")
+        # A schedule with an off_time (pair) always leads with ON.
+        if self.end_time:
+            self.action = "ON"
+        return self
 
     @field_validator("days_of_week")
     @classmethod
@@ -149,6 +167,18 @@ class ScheduleUpdate(BaseModel):
     days_of_week: Optional[list[int]] = Field(default=None, min_length=0, max_length=7)
     enabled: Optional[bool] = None
     timezone: Optional[str] = Field(default=None, max_length=40)
+    on_time: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+    off_time: Optional[str] = Field(default=None, pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+    @model_validator(mode="after")
+    def _apply_pair_times(self):
+        if self.on_time is not None:
+            self.start_time = self.on_time
+        if self.off_time is not None:
+            self.end_time = self.off_time
+        if self.off_time is not None:
+            self.action = "ON"
+        return self
 
     @field_validator("days_of_week")
     @classmethod
@@ -174,6 +204,10 @@ class ScheduleResponse(BaseModel):
     updated_at: Optional[datetime] = None
     last_executed_at: Optional[datetime] = None
     next_execution_at: Optional[datetime] = None
+    on_time: Optional[str] = None
+    off_time: Optional[str] = None
+    next_on_at: Optional[datetime] = None
+    next_off_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
@@ -193,6 +227,17 @@ class ScheduleResponse(BaseModel):
     @field_serializer("days_of_week")
     def _serialize_days(self, v, _info):
         return v or []
+
+    @model_validator(mode="before")
+    @classmethod
+    def _derive_pair_fields(cls, data):
+        # Derive on_time/off_time from start_time/end_time when not provided.
+        if isinstance(data, dict):
+            if data.get("on_time") is None and data.get("start_time"):
+                data["on_time"] = data["start_time"]
+            if data.get("off_time") is None and data.get("end_time"):
+                data["off_time"] = data["end_time"]
+        return data
 
 
 class ControlCommandCreate(BaseModel):

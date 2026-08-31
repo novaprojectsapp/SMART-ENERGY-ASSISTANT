@@ -2,13 +2,14 @@
 
 This document describes the appliance scheduling and control feature.
 
-> **STATUS: SCHEDULING SOFTWARE READY — PHYSICAL APPLIANCE CONTROL PENDING HARDWARE.**
+> **STATUS: SCHEDULING SOFTWARE SUPPORTS ON/OFF TIMES — PHYSICAL APPLIANCE CONTROL PENDING HARDWARE.**
 >
-> The software can register appliances, build recurring ON/OFF schedules, run a
-> scheduler engine, and record control commands. Real physical switching (turning
-> a relay on/off on the ESP32) is **not yet connected**. Until the ESP32 relay
-> firmware/hardware exists, every control command is returned honestly as
-> **SIMULATED / PENDING** with the message
+> The software can register appliances, build recurring **ON/OFF time-pair**
+> schedules (ONCE / DAILY / WEEKLY), run a timezone-aware scheduler engine that
+> emits independent ON and OFF events (including overnight pairs), and record
+> control commands. Real physical switching (turning a relay on/off on the ESP32)
+> is **not yet connected**. Until the ESP32 relay firmware/hardware exists, every
+> control command is returned honestly as **SIMULATED / PENDING** with the message
 > *"Hardware control is not connected yet."* The system never claims it turned a
 > device on or off on real hardware.
 
@@ -20,14 +21,19 @@ Scheduling is an **actuation** feature, distinct from PZEM energy measurement.
 It adds:
 
 - An **appliance registry** (name, type, channel, device, control capability)
-- **Recurring schedules** (ONCE / DAILY / WEEKLY) with an ON / OFF action and time
-- A **scheduler engine** that finds due schedules and produces control commands
+- **Recurring schedules** (ONCE / DAILY / WEEKLY) where a single schedule holds an
+  **ON/OFF time pair** (`on_time` / `off_time`), supporting overnight schedules
+  (e.g. ON 23:00 → OFF 06:00 the next day) and independent ON / OFF events
+- A **scheduler engine** that tracks the next ON and next OFF separately, finds
+  due events with a duplicate-prevention guard, and produces control commands
 - **Manual control** for registered appliances
 - An **ESP32 control adapter** that returns `HARDWARE_CONTROL_NOT_AVAILABLE` until
   relay hardware is present
 - **Voice / AI scheduling intents** with deterministic natural-language extraction
-  and clarification ("Which appliance do you mean: …?", "What time?")
-- A **Smart Scheduler** page in the dashboard
+  and clarification ("Which appliance do you mean: …?", "What time should I turn
+  it off?", "What time should I turn it on?")
+- A **Smart Scheduler** page in the dashboard with ON/OFF inputs and next-ON/next-OFF
+  display
 
 Existing PZEM ingestion, billing, Tamil Nadu tariff, the G4 appliance AI safety
 gate, the simulator, voice machinery, GPIO17/18, and the readings API are
@@ -118,13 +124,28 @@ Scheduler page) ---->|  appliances / schedules / control      |
 
 ### Schedule validation
 
-- `action` must be `ON` or `OFF`.
+- A schedule is created with an **ON time** (`on_time`, required) and an optional
+  **OFF time** (`off_time`). Internally `on_time` maps to `start_time` and
+  `off_time` maps to `end_time`, so the existing columns are reused (no migration).
+- `action` must be `ON` or `OFF`; a schedule with an `off_time` always leads with `ON`.
 - `schedule_type` must be `ONCE`, `DAILY`, `WEEKLY`, or `AFTER_DURATION` (reserved).
-- `start_time` must be `HH:MM` (24h), `days_of_week` integers 0 (Mon)–6 (Sun).
+- Times are `HH:MM` (24h); `days_of_week` are integers 0 (Mon)–6 (Sun).
+- **ON time ≠ OFF time** for same-day schedules — equal times are rejected with
+  *"ON time and OFF time cannot be the same."* (422)
+- **Overnight pairs are allowed**: ON 23:00 / OFF 06:00 schedules the OFF on the
+  **next day**, so the OFF is never treated as before the ON.
+- **Weekly schedules require ≥ 1 day** (422 otherwise).
 - Missing appliance → `404`; invalid action / time / type → `422`;
   non-control-capable appliance → `400`.
 - Disabling a schedule clears `next_execution_at`; already-executed and deleted
-  schedules are never re-run.
+  schedules are never re-run. After a restart, a fully-executed ON event is not
+  re-fired past its time because `next_execution_at` is persisted.
+
+### Next ON / Next OFF display
+
+Each API schedule response includes the computed **`next_on_at`** and **`next_off_at`**
+(naive-UTC datetimes). For overnight pairs the OFF is correctly reported on the day
+after the ON.
 
 ### Control honesty rules
 
@@ -145,13 +166,18 @@ Deterministic extraction runs locally (no LLM needed for the core flow):
   `quarter past nine`, `every night at 10 PM`
 - **Recurrence**: `every day` (DAILY), `once`/`tomorrow` (ONCE),
   `every monday and friday` / `weekdays` (WEEKLY)
+- **ON/OFF pair**: `at 6 PM and off at 11 PM`, `from 7 PM to 10 PM`,
+  `turn it off at 11 PM` (as a follow-up), overturning `23:00 → 06:00`
 - **Appliance**: `bulb 1`, `fan 2`, `bedroom light`, `pump`, `ac`, …
 
 Examples:
 
 | Utterance | Result |
 |-----------|--------|
-| `turn on bulb 1 at 6 PM every day` | Creates a DAILY ON schedule at 18:00 |
+| `turn on bulb 1 at 6 PM and turn it off at 11 PM every day` | Creates a DAILY ON 18:00 → OFF 23:00 pair |
+| `schedule bulb 1 from 7 PM to 10 PM Monday and Friday` | Creates a WEEKLY pair 19:00 → 22:00 |
+| `turn on pump 1 at 6 PM every day` (ON only) | *"… What time should I turn it off?"* (clarification) |
+| `turn off fan 2 at 11 PM` (OFF only) | *"… What time should I turn it on?"* (clarification) |
 | `show my schedules` | Lists schedules |
 | `turn off fan 1` | Records a SIMULATED OFF command |
 | `disable the pump schedule` | Disables matching schedule(s) |
@@ -159,7 +185,9 @@ Examples:
 | `schedule the socket` (no time) | *"… What time?"* |
 
 Rules:
-- Missing required fields → the assistant asks a clarifying question.
+- Missing required fields → the assistant asks a clarifying question, and an
+  **ON-only or OFF-only request is completed into a pair** by asking for the
+  missing opposite time.
 - Multiple matching appliances → the assistant asks "Which appliance do you mean: …?".
 - The assistant **never guesses** and **never creates an incomplete schedule**.
 
@@ -171,8 +199,10 @@ Located at `frontend/js/scheduler.js`, reachable via the **Smart Scheduler** nav
 
 - **Connected Appliances** cards with manual ON/OFF (recorded as SIMULATED) and delete
 - **Add Appliance** form (name, type, channel, device)
-- **Schedules** table with edit, enable/disable, and delete; weekly day checkboxes
-- **Add/Edit Schedule** form with ONCE/DAILY/WEEKLY repeat and day picker
+- **Schedules** table with ON/OFF times and **Next (next ON / next OFF)** column,
+  plus edit, enable/disable, and delete; weekly day checkboxes
+- **Add/Edit Schedule** form with ONCE/DAILY/WEEKLY repeat, an **ON Time** and an
+  **OFF Time** input (overnight pairs allowed), and a day picker
 - **Control Command History** with an honest footnote:
   *"Hardware control is not connected yet — commands are recorded as SIMULATED/PENDING until ESP32 relay control firmware is integrated."*
 
@@ -187,9 +217,12 @@ python -m pytest backend/tests/ -v
 
 - `backend/tests/test_api.py`: appliance/schedule/control CRUD, scheduler engine
   (due-once, disabled/deleted skip, duplicate-prevention, next-execution),
+  **ON/OFF pair creation (daily/weekly), overnight pairs, ON≠OFF validation,
+  weekly-requires-day validation, pair execution, overnight next-ON/next-OFF**
   control honesty, and a test that asserts tests run against the isolated test DB.
-- `backend/tests/test_scheduling_voice.py`: voice create / list / manual /
-  disable / delete and clarification paths, in a freshly reset isolated DB.
+- `backend/tests/test_scheduling_voice.py`: voice create (pair + from/to ranges),
+  clarify missing ON / missing OFF, list / manual / disable / delete and
+  clarification paths, in a freshly reset isolated DB.
 
 Tests run with `APP_TESTING=1` set before import so they use
 `test_smart_energy.db` and never touch `smart_energy.db`.

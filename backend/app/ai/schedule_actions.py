@@ -105,34 +105,59 @@ class ScheduleActions:
             return None, err
         action = draft.get("action")
         start_time = draft.get("start_time")
+        off_time = draft.get("off_time") or draft.get("end_time")
         schedule_type = draft.get("schedule_type") or "DAILY"
         days = draft.get("days_of_week")
 
-        if not action:
+        if action not in ("ON", "OFF"):
             return None, "Should the appliance be turned ON or OFF?"
         if not start_time:
-            return None, "What time should I schedule it? For example '6 PM' or '18:00'."
+            return None, "What time should I turn it on or off? For example '6 PM' or '18:00'."
 
         if not app.control_capable:
             return None, f"{app.name} is not control-capable, so it cannot be scheduled."
 
-        sched = ScheduleCreate(
-            appliance_id=app.id,
-            action=action,
-            schedule_type=schedule_type,
-            start_time=start_time,
-            days_of_week=days or [],
-        )
+        # A schedule with an off_time is an ON/OFF pair and always leads with ON.
+        if off_time:
+            action = "ON"
+            start_time_on = start_time
+            if not off_time:
+                return None, "What time should I turn it off?"
+            sched = ScheduleCreate(
+                appliance_id=app.id,
+                action=action,
+                schedule_type=schedule_type,
+                start_time=start_time_on,
+                end_time=off_time,
+                days_of_week=days or [],
+            )
+        else:
+            sched = ScheduleCreate(
+                appliance_id=app.id,
+                action=action,
+                schedule_type=schedule_type,
+                start_time=start_time,
+                days_of_week=days or [],
+            )
         from ..api.routers.scheduling import create_schedule as _cs
         created = _cs(sched, self.db)
-        self.db.refresh(created)
         repeat = schedule_type
         if repeat == "WEEKLY":
             repeat += f" {self._fmt_days(days or [])}"
+        if created.off_time:
+            message = (
+                f"Scheduled {app.name} to turn ON at {start_time} and OFF at {created.off_time} "
+                f"({repeat}). Physical appliance control is not connected yet."
+            )
+        else:
+            message = (
+                f"Scheduled {app.name} to turn {action} at {start_time} ({repeat}). "
+                f"Physical appliance control is not connected yet."
+            )
         return {
             "created": True,
             "schedule": created,
-            "message": f"Scheduled {app.name} to turn {action} at {start_time} ({repeat}).",
+            "message": message,
         }, None
 
     def maybe_clarify(self, draft: dict) -> str | None:
@@ -140,10 +165,21 @@ class ScheduleActions:
         app, err = self.resolve_appliance(draft.get("appliance_ref"))
         if err:
             return err
-        if not draft.get("action"):
-            return f"Sure. What time should I turn {app.name} on or off?"
-        if not draft.get("start_time"):
-            return f"Got it — turn {app.name} {draft.get('action')}. What time?"
+        action = draft.get("action")
+        start_time = draft.get("start_time")
+        off_time = draft.get("off_time") or draft.get("end_time")
+        if not action:
+            return f"What time should I turn {app.name} on or off?"
+        if action == "ON":
+            if start_time and not off_time:
+                return f"Got it — turn {app.name} ON at {start_time}. What time should I turn it off?"
+            if not start_time:
+                return f"Got it — turn {app.name} ON. What time?"
+        elif action == "OFF":
+            if off_time and not start_time:
+                return f"Got it — turn {app.name} OFF at {off_time}. What time should I turn it on?"
+            if not start_time:
+                return f"Got it — turn {app.name} OFF. What time?"
         return None
 
     # ------------------------------------------------------------------- draft

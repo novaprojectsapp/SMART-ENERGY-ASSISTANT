@@ -192,9 +192,11 @@ Billing period: 2 months (bimonthly)
 
 ## Smart Appliance Scheduling & Control
 
-Register appliances and build recurring ON/OFF schedules (ONCE / DAILY / WEEKLY),
-create them from the dashboard or by voice ("turn on bulb 1 at 6 PM every day"),
-run the scheduler, and record control history. See `docs/scheduling.md`.
+Register appliances and build recurring **ON/OFF time-pair** schedules
+(ONCE / DAILY / WEEKLY) — a single schedule holds an ON time and an OFF time
+(e.g. ON 18:00 → OFF 23:00, including overnight pairs like ON 23:00 → OFF 06:00).
+Create them from the dashboard or by voice ("turn on bulb 1 at 6 PM and turn it off
+at 11 PM every day"), run the scheduler, and record control history. See `docs/scheduling.md`.
 
 > **Honesty note:** Scheduling software is ready, but **physical appliance control
 > is pending hardware**. Until ESP32 relay control firmware is integrated, all

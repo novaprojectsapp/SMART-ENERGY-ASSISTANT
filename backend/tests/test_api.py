@@ -652,6 +652,136 @@ def test_schedule_delete():
     assert client.get(f"/api/v1/schedules/{s['id']}").status_code == 404
 
 
+# ---- ON/OFF PAIR SCHEDULES ----
+def test_schedule_create_on_off_pair():
+    app = _make_sched_appliance(name="Sched Pair Bulb")
+    s = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"],
+        "on_time": "18:00",
+        "off_time": "23:00",
+        "schedule_type": "DAILY",
+    }).json()
+    assert s["action"] == "ON"          # pair always leads with ON
+    assert s["on_time"] == "18:00"
+    assert s["off_time"] == "23:00"
+    assert s["start_time"] == "18:00"   # on_time maps to start_time
+    assert s["end_time"] == "23:00"     # off_time maps to end_time
+
+
+def test_schedule_create_on_off_pair_weekly():
+    app = _make_sched_appliance(name="Sched Pair Weekly Bulb")
+    s = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"],
+        "on_time": "07:00",
+        "off_time": "11:00",
+        "schedule_type": "WEEKLY",
+        "days_of_week": [0, 4],
+    }).json()
+    assert s["schedule_type"] == "WEEKLY"
+    assert s["days_of_week"] == [0, 4]
+    assert s["on_time"] == "07:00"
+    assert s["off_time"] == "11:00"
+
+
+def test_schedule_create_overnight_pair_allowed():
+    app = _make_sched_appliance(name="Sched Overnight Bulb")
+    s = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"],
+        "on_time": "23:00",
+        "off_time": "06:00",
+        "schedule_type": "DAILY",
+    }).json()
+    assert s["on_time"] == "23:00"
+    assert s["off_time"] == "06:00"
+
+
+def test_schedule_reject_same_on_off_time():
+    app = _make_sched_appliance(name="Sched SameTime Bulb")
+    r = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"],
+        "on_time": "18:00",
+        "off_time": "18:00",
+        "schedule_type": "DAILY",
+    })
+    assert r.status_code == 422
+    assert "ON time and OFF time cannot be the same" in r.json()["detail"]
+
+
+def test_schedule_weekly_requires_day():
+    app = _make_sched_appliance(name="Sched NoDay Bulb")
+    r = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"],
+        "on_time": "18:00",
+        "off_time": "23:00",
+        "schedule_type": "WEEKLY",
+        "days_of_week": [],
+    })
+    assert r.status_code == 422
+    assert "at least one day" in r.json()["detail"]
+
+
+def test_scheduler_on_off_pair_executes_both_events():
+    from app.services.scheduler import SchedulerService
+    from app.models import Schedule as SchedModel
+    from app.database import SessionLocal
+    from datetime import datetime, timezone
+    app = _make_sched_appliance(name="Sched PairExec Bulb")
+    s = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"],
+        "on_time": "18:00",
+        "off_time": "23:00",
+        "schedule_type": "DAILY",
+    }).json()
+    db = SessionLocal()
+    row = db.query(SchedModel).filter(SchedModel.id == s["id"]).first()
+
+    # Force the next pending event due now.
+    row.next_execution_at = datetime.now(timezone.utc)
+    db.commit()
+
+    svc = SchedulerService(db)
+    cmds1 = svc.run_due()
+    assert len(cmds1) == 1
+    assert cmds1[0].action in ("ON", "OFF")
+    assert cmds1[0].source == "SCHEDULE"
+
+    # Executing advances next_execution_at, so a second run must not duplicate.
+    cmds2 = svc.run_due()
+    assert cmds2 == []
+    db.close()
+
+
+def test_scheduler_overnight_pair_next_events():
+    from app.services.scheduler import SchedulerService
+    from app.models import Schedule as SchedModel
+    from app.database import SessionLocal
+    from datetime import datetime
+    app = _make_sched_appliance(name="Sched OvernightExec Bulb")
+    s = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"],
+        "on_time": "23:00",
+        "off_time": "06:00",
+        "schedule_type": "DAILY",
+    }).json()
+    db = SessionLocal()
+    row = db.query(SchedModel).filter(SchedModel.id == s["id"]).first()
+    svc = SchedulerService(db)
+    # Pick a reference time on a given local day (e.g. before the 23:00 ON).
+    # 18:00 IST is 12:30 UTC.
+    ref = datetime(2026, 1, 1, 12, 30)  # naive-UTC 12:30 = 18:00 IST
+    next_on = svc.next_on_at(row, ref)
+    next_off = svc.next_off_at(row, ref)
+    assert next_on is not None
+    assert next_off is not None
+    # ON at 23:00 IST = 17:30 UTC on the reference day.
+    assert next_on.hour == 17 and next_on.minute == 30
+    # OFF at 06:00 IST next day = 00:30 UTC next day.
+    assert next_off.hour == 0 and next_off.minute == 30
+    # OFF must come after ON.
+    assert next_off > next_on
+    db.close()
+
+
 # ---- SCHEDULER ----
 def test_scheduler_due_executes_once_and_duplicate_prevented():
     from app.services.scheduler import SchedulerService
