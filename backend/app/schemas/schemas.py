@@ -41,6 +41,7 @@ class ReadingCreate(BaseModel):
     energy: float = Field(..., ge=0)
     frequency: float = Field(..., ge=0, le=100)
     power_factor: float = Field(..., ge=0, le=1.0)
+    data_source: str = Field(default="HARDWARE", pattern="^(HARDWARE|SIMULATOR)$")
 
 
 class ReadingResponse(BaseModel):

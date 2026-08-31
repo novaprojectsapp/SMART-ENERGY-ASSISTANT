@@ -63,6 +63,10 @@
                     <h1 class="page-title" id="page-title">Dashboard</h1>
                 </div>
                 <div class="header-right">
+                    <div class="connectivity-badge" id="wifi-indicator" data-state="unknown">
+                        <span class="wifi-icon">📶</span>
+                        <span id="wifi-status-label">Checking...</span>
+                    </div>
                     <div class="device-status-label">
                         <div class="status-dot" id="status-dot"></div>
                         <span id="device-status-label">Checking...</span>
@@ -77,6 +81,7 @@
                             <div class="loading-spinner"></div>
                         </div>
                     </div>
+                    <div id="connection-section"></div>
                     <div id="billing-section"></div>
                     <div id="appliance-section"></div>
                     <div id="insights-section"></div>
@@ -135,6 +140,7 @@
                         <div class="dashboard-grid" id="live-cards">
                             <div class="stat-card" style="grid-column:1/-1;text-align:center;padding:40px;"><div class="loading-spinner"></div></div>
                         </div>
+                        <div id="connection-section"></div>
                         <div id="billing-section"></div>
                         <div id="appliance-section"></div>
                         <div id="insights-section"></div>
@@ -211,19 +217,7 @@
 
         async function loadSettings() {
             const container = document.getElementById('settings-content');
-            try {
-                const s = await api.getSettings();
-                container.innerHTML = `
-                    <div class="section-card">
-                        <div class="section-card-header">
-                            <span class="section-card-title">System Settings</span>
-                        </div>
-                        <div class="settings-row"><span class="label">Environment</span><span class="value">${s.app_env}</span></div>
-                        <div class="settings-row"><span class="label">Log Level</span><span class="value">${s.log_level}</span></div>
-                        <div class="settings-row"><span class="label">Gemini Enabled</span><span class="value ${s.gemini_enabled ? 'enabled' : 'disabled'}">${s.gemini_enabled ? 'Yes' : 'No'}</span></div>
-                        <div class="settings-row"><span class="label">Gemini Model</span><span class="value">${s.gemini_model || 'N/A'}</span></div>
-                        <div class="settings-row"><span class="label">Gemini API Key</span><span class="value">${s.has_gemini_key ? 'Configured' : 'Not Set'}</span></div>
-                    </div>
+            container.innerHTML = `
                     <div class="section-card">
                         <div class="section-card-header">
                             <span class="section-card-title">About</span>
@@ -234,9 +228,6 @@
                         <div class="settings-row"><span class="label">Backend</span><span class="value">Python FastAPI</span></div>
                         <div class="settings-row"><span class="label">Frontend</span><span class="value">HTML/CSS/JS</span></div>
                     </div>`;
-            } catch (e) {
-                showError(container, e.message);
-            }
         }
 
         document.addEventListener('DOMContentLoaded', () => {

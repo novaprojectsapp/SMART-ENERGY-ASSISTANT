@@ -152,6 +152,94 @@
 .section-badge.predicted { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
 .section-badge.calculated { background: rgba(59, 130, 246, 0.15); color: var(--accent); }
 .section-badge.no-data { background: rgba(107, 114, 128, 0.15); color: var(--text-muted); }
+.section-badge.online, .section-badge.ok { background: rgba(16, 185, 129, 0.15); color: var(--success); }
+.section-badge.connecting { background: rgba(245, 158, 11, 0.15); color: var(--warning); }
+.section-badge.offline { background: rgba(239, 68, 68, 0.15); color: var(--danger); }
+
+/* Connectivity / Data Connection Card */
+.connection-banner {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    margin-bottom: 16px;
+    background: var(--bg-secondary);
+}
+.connection-dot {
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    flex-shrink: 0;
+}
+.connection-dot.online, .connection-dot.ok { background: var(--success); box-shadow: 0 0 8px var(--success); }
+.connection-dot.connecting { background: var(--warning); box-shadow: 0 0 8px var(--warning); }
+.connection-dot.offline { background: var(--danger); box-shadow: 0 0 8px var(--danger); }
+.connection-dot.no-data { background: var(--text-muted); }
+.connection-status { flex: 1; }
+.connection-state { font-size: 14px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.5px; }
+.connection-hint { font-size: 12px; color: var(--text-muted); margin-top: 2px; }
+.connection-datasource { text-align: right; }
+.connection-datasource .ds-label {
+    font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: 0.5px; display: block;
+}
+.connection-datasource .ds-value { font-size: 13px; font-weight: 700; }
+.connection-datasource .ds-value.sim { color: var(--warning); }
+
+.connection-chain {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-bottom: 12px;
+}
+.chain-node {
+    flex: 1;
+    min-width: 90px;
+    text-align: center;
+    padding: 12px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--bg-card);
+}
+.chain-node.ok { border-color: rgba(16, 185, 129, 0.4); }
+.chain-node.down { border-color: rgba(239, 68, 68, 0.4); }
+.chain-node.wait { border-color: rgba(245, 158, 11, 0.4); }
+.chain-icon { font-size: 20px; margin-bottom: 4px; }
+.chain-name { font-size: 12px; font-weight: 600; }
+.chain-state { font-size: 11px; color: var(--text-muted); margin-top: 2px; }
+.chain-node.ok .chain-state { color: var(--success); }
+.chain-node.down .chain-state { color: var(--danger); }
+.chain-node.wait .chain-state { color: var(--warning); }
+.chain-link {
+    width: 24px;
+    height: 2px;
+    background: var(--text-muted);
+    flex-shrink: 0;
+    opacity: 0.4;
+}
+.chain-link.ok { background: var(--success); opacity: 1; }
+.chain-link.down { background: var(--danger); opacity: 1; }
+.connection-footnote { font-size: 11px; color: var(--text-muted); text-align: center; }
+
+.connectivity-badge {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 5px 10px;
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    background: var(--bg-card);
+}
+.connectivity-badge[data-state="online"] { color: var(--success); border-color: rgba(16, 185, 129, 0.4); }
+.connectivity-badge[data-state="offline"] { color: var(--danger); border-color: rgba(239, 68, 68, 0.4); }
+.connectivity-badge[data-state="connecting"], .connectivity-badge[data-state="unknown"] { color: var(--warning); border-color: rgba(245, 158, 11, 0.4); }
+.wifi-icon { font-size: 12px; }
 
 /* Appliance Cards */
 .appliance-grid {

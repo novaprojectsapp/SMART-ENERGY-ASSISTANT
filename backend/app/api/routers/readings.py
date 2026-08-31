@@ -41,7 +41,7 @@ def ingest_reading(device_id: str, reading_in: ReadingCreate, db: Session = Depe
         energy=reading_in.energy,
         frequency=reading_in.frequency,
         power_factor=reading_in.power_factor,
-        data_source="HARDWARE",
+        data_source=reading_in.data_source,
         created_at=utcnow(),
     )
     db.add(reading)

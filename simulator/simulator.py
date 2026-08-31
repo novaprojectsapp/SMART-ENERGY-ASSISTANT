@@ -111,14 +111,15 @@ def ensure_device(base_url: str, device_id: str, client: httpx.Client):
 
 
 def send_reading(base_url: str, device_id: str, reading: dict, client: httpx.Client, dry_run: bool):
+    payload = {**reading, "data_source": "SIMULATOR"}
     if dry_run:
-        print(f"[DRY RUN] {json.dumps(reading, indent=2)}")
+        print(f"[DRY RUN] {json.dumps(payload, indent=2)}")
         return True
 
     try:
         res = client.post(
             f"{base_url}/api/v1/devices/{device_id}/readings",
-            json=reading,
+            json=payload,
             timeout=5.0,
         )
         if res.status_code in (200, 201):
