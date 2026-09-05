@@ -11,15 +11,15 @@ public:
     bool registerDevice(const String& deviceId, const String& deviceName);
     bool sendMeasurement(const String& deviceId, float voltage, float current,
                          float power, float energy, float frequency, float powerFactor);
-    String getLastUrl();
     int getLastHttpResponseCode();
     bool isLastSendSuccessful();
 
 private:
     String _baseUrl;
-    String _lastUrl;
     int _lastHttpResponseCode;
     bool _lastSendOk;
+    String _postJson(const String& url, const String& payload);
+    void _printHttpFailure(int httpCode, const String& body);
 };
 
 #endif // API_CLIENT_H
