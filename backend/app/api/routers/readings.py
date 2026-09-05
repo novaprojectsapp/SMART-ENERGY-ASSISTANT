@@ -22,6 +22,11 @@ def ingest_reading(device_id: str, reading_in: ReadingCreate, db: Session = Depe
     if errors:
         raise HTTPException(status_code=422, detail=f"Invalid reading: {'; '.join(errors)}")
 
+    # ESP32 devices in AP mode have no reliable clock; use backend wall-clock time
+    # when the device does not supply a timestamp.
+    if reading_in.timestamp is None:
+        reading_in.timestamp = utcnow()
+
     existing = (
         db.query(EnergyReading)
         .filter(EnergyReading.device_id == device_id, EnergyReading.timestamp == reading_in.timestamp)

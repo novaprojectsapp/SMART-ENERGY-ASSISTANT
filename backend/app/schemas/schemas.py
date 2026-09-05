@@ -35,7 +35,7 @@ class DeviceResponse(BaseModel):
 
 
 class ReadingCreate(BaseModel):
-    timestamp: datetime
+    timestamp: Optional[datetime] = None
     voltage: float = Field(..., ge=0, le=500)
     current: float = Field(..., ge=0, le=100)
     power: float = Field(..., ge=0, le=50000)
