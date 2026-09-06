@@ -1,100 +1,241 @@
-# Smart Energy Assistant - Client Guide
+# SMART ENERGY ASSISTANT
 
-Your energy monitoring app runs entirely on your Windows PC. This guide tells
-you everything you need to know.
+**Real-time electrical energy monitoring for your home — ready to use, no setup hassle.**
 
-## What you need
+Smart Energy Assistant monitors live electrical usage using an **ESP32-S3** and a **PZEM-004T** energy meter. Everything runs from a single application on your Windows PC and shows your readings on a clear, easy-to-read dashboard.
 
-- A Windows laptop / PC
-- The ESP32-S3 + PZEM-004T hardware unit (already set up)
-- This application (a single `.exe` file)
+### Features
 
-## 1. First launch
+- Live energy monitoring
+- Voltage monitoring
+- Current monitoring
+- Power monitoring
+- Energy consumption tracking
+- Cost and billing analysis
+- AI insights
+- Energy recommendations
+- Reports and analytics
+- Voice assistant
 
-1. Copy `SmartEnergyAssistant.exe` anywhere on the PC (for example to `C:\SmartEnergy`).
-2. **Double-click** `SmartEnergyAssistant.exe`.
-3. On the very first run, Windows may ask about a network connection
-   ("Windows Security / Firewall"). Click **Allow** so the ESP32 can reach the app.
-4. A small window opens: **"Smart Energy Assistant is running"**, and your
-   default browser opens the dashboard automatically.
-5. You can leave that small window open while using the app. Click **Exit**
-   (or the X) to stop the app when you are done.
+---
 
-The dashboard address is `http://127.0.0.1:8000/`.
+## 1. What You Received
 
-## 2. Connecting the ESP32
+You receive a **single, self-contained executable** file. It includes the dashboard, the storage system, and everything needed to run — nothing else has to be installed on your PC.
 
-The ESP32 creates its own Wi-Fi network. Connect your PC/laptop to it:
+```
+Smart Energy Assistant/
+│
+├── SmartEnergyAssistant.exe
+└── README_CLIENT.md
+```
+
+> **Why it is self-contained:** the `.exe` starts its own background service, opens the dashboard in your browser, saves data locally, and stops cleanly when you close it. You do **not** need to install Python, databases, or any other software.
+
+---
+
+## 2. System Requirements
+
+### Required
+
+| Item | Requirement |
+|---|---|
+| Computer | Windows 10 or Windows 11 (laptop or PC) |
+| Network | Wi-Fi enabled laptop/PC |
+| Hardware | ESP32-S3 powered on |
+| Hardware | PZEM-004T properly connected |
+| Electrical | Monitoring hardware working (meter wired to the load) |
+
+### Not required
+
+- Python
+- FastAPI / Uvicorn / Node.js / npm
+- Arduino IDE
+- Database installation (SQLite, MySQL, etc.)
+- Any software dependencies or developer tools
+
+---
+
+## 3. First-Time Setup
+
+Follow these steps in order.
+
+### Step 1 — Power ON the hardware
+
+Make sure the **ESP32-S3 and PZEM-004T** are powered on and the PZEM is connected correctly to the load you want to monitor.
+
+### Step 2 — Connect the laptop to the ESP32 Wi-Fi
+
+On your Windows PC, open **Settings → Wi-Fi** and connect to the ESP32's own network:
 
 | Setting | Value |
 |---|---|
 | Wi-Fi network (SSID) | `SmartEnergy` |
 | Password | `SmartEnergy123` |
-| ESP32 gateway | `192.168.4.1` |
-| Your laptop's backend IP | `192.168.4.2` |
 
-Important: the ESP32 sends data to the laptop at `192.168.4.2:8000`. The
-laptop must have that IP while it is connected to the `SmartEnergy` Wi-Fi.
-When your laptop joins the ESP32 hotspot it normally gets this IP
-automatically.
+### Step 3 — Wait for the connection
 
-Once connected, real meter readings appear on the dashboard within a few
-seconds.
+Wait until Windows shows the laptop is connected to `SmartEnergy`.
 
-## 3. Where your data is stored
+### Step 4 — Confirm the laptop's address
 
-Everything is saved in a folder on your PC:
+The ESP32 hotspot normally provides these addresses:
+
+| Device | Address |
+|---|---|
+| ESP32 Access Point | `192.168.4.1` |
+| Laptop / backend | `192.168.4.2` |
+| Backend port | `8000` |
+| Primary device ID | `ESP32-S3-01` |
+
+> **Important.** The ESP32 currently sends readings to the backend at
+> **`192.168.4.2:8000`**.
+>
+> This means the laptop **must receive the address `192.168.4.2`** while it is
+> connected to the `SmartEnergy` hotspot. In normal use the ESP32 gives the
+> laptop this address automatically — you do not need to change anything.
+
+---
+
+## 4. Starting the Application
+
+1. **Double-click** `SmartEnergyAssistant.exe`.
+2. **Wait a few seconds** while it starts (a small window titled *"Smart Energy Assistant is running"* appears).
+3. On the **first run only**, Windows Firewall may ask for permission — click **Allow access** so the hardware can reach the app.
+4. Your **dashboard opens automatically** in the default browser.
+
+The dashboard is normally available at:
+
+```
+http://127.0.0.1:8000/
+```
+
+> You do **not** need to type any commands or install anything. The application does everything itself.
+
+---
+
+## 5. Checking Live Data
+
+Once everything is running, your dashboard should show:
+
+- Device **connected/online** status
+- **Recent update time** (readings arrive every few seconds)
+- **Live voltage**
+- **Live current**
+- **Live power**
+- **Energy consumption**
+- **Frequency**
+- **Power factor**
+
+Live readings update automatically about every few seconds when **all** of these are true:
+
+- [ ] ESP32 is powered on
+- [ ] PZEM-004T communication is working
+- [ ] Laptop is connected to the `SmartEnergy` Wi-Fi
+- [ ] `SmartEnergyAssistant.exe` is running
+
+---
+
+## 6. Using the Dashboard
+
+### Live Monitor
+See your real-time electrical measurements — voltage, current, power, frequency and power factor at a glance.
+
+### AI Insights
+Automatically generated observations about how you are using energy.
+
+### Cost & Billing
+Estimated energy consumption and the corresponding electricity cost.
+
+### Energy Recommendations
+Practical suggestions for reducing your energy consumption.
+
+### Reports & Analytics
+Historical consumption and trends over hours, days and weeks.
+
+### What-If Simulator
+Explore "what if" energy-use scenarios to see how they would affect cost.
+
+### Voice Assistant
+Ask questions aloud (or by typing) about current power, energy usage, billing and system status.
+
+---
+
+## 7. Closing the Application
+
+To stop the application:
+
+1. Click **Exit** in the small running window, or simply **close the window** (✕).
+
+Closing it:
+
+- Safely stops the background service
+- **Does not delete your data**
+- Keeps all previously stored readings for next time
+
+---
+
+## 8. Data Storage
+
+The application saves all data **locally on your Windows PC**, in a private application folder:
+
+```
+%LOCALAPPDATA%\SmartEnergyAssistant\
+```
+
+Example location on most PCs:
 
 ```
 C:\Users\<your-user>\AppData\Local\SmartEnergyAssistant\
 ```
 
-- `smart_energy.db` - your history, devices, billing, settings
-- `logs\` - error and activity logs
+- Your history is **saved automatically**.
+- **Closing or restarting the application never erases** your previous readings.
+- **Do not delete or move** this folder unless you are asked to — it holds your data.
 
-Your data is kept between launches. Uninstalling/copying the `.exe` alone will
-NOT delete this folder.
+---
 
-## 4. Troubleshooting
+## 9. Troubleshooting
 
-### Dashboard does not open
-- Wait a few seconds after double-clicking - the app starts the backend first.
-- Check the small running window for messages.
-- If a Windows Firewall prompt appeared, make sure you clicked **Allow**.
-- Look in `C:\Users\<your-user>\AppData\Local\SmartEnergyAssistant\logs\launcher.log` for errors.
+| Problem | Possible solution |
+|---|---|
+| Dashboard does not open | Wait a few seconds, then check that `SmartEnergyAssistant.exe` is still running and its small window is open. |
+| Windows Firewall message appears | Click **Allow access**. |
+| Dashboard shows Offline | Check the ESP32 power; check the PZEM power; make sure the laptop is connected to `SmartEnergy` Wi-Fi; make sure `SmartEnergyAssistant.exe` is running; wait a few seconds. |
+| Dashboard is connected but readings do not update | Confirm the ESP32 is powered; confirm the PZEM is connected; confirm the laptop is on `SmartEnergy`; check that the laptop's address is `192.168.4.2`; restart `SmartEnergyAssistant.exe`; restart the ESP32 if needed. |
+| Wi-Fi is connected but no data appears | The ESP32 must reach the laptop at **`192.168.4.2:8000`**. Confirm the `SmartEnergy` Wi-Fi is connected, the laptop received address `192.168.4.2`, the application is running, and firewall access was allowed. |
+| "SmartScreen" warning appears | The application is currently an **unsigned** Windows executable, so Windows may show a blue warning. If it appears, choose **More info → Run anyway**. This is normal for new unbranded software and is safe when you received the file from us. |
 
-### Port 8000 is already in use
-The app needs port 8000. If another program already uses it, close that
-program and start Smart Energy Assistant again. The app shows an error
-message explaining this - it never closes other programs on its own.
-Running Smart Energy Assistant twice is fine: the second time it simply
-brings the dashboard up and does not start a second copy.
+---
 
-### ESP32 connected but no readings
-- Confirm your PC is connected to Wi-Fi named `SmartEnergy`.
-- Confirm your PC's IP is `192.168.4.2`.
-  - Open Command Prompt and run `ipconfig`.
-  - The Wi-Fi adapter in the `SmartEnergy` network should show IPv4
-    `192.168.4.2`.
-- Make sure the app is running and the running window is open.
-- The dashboard "Device Status" should show **Online/Connected**. If it shows
-  Offline, the ESP32 cannot reach the app - usually a firewall or IP issue.
+## 10. Important Usage Notes
 
-### Laptop not using 192.168.4.2
-Rarely a PC keeps an old IP. To renew:
-1. Open Command Prompt as Administrator.
-2. Run `ipconfig /release` then `ipconfig /renew`.
-3. Reconnect to the `SmartEnergy` Wi-Fi if needed.
-4. Check with `ipconfig` that the IP is now `192.168.4.2`.
+- Keep the **ESP32 powered on** while using live monitoring.
+- Keep the laptop **connected to the `SmartEnergy` Wi-Fi**.
+- **Do not change** the ESP32 hotspot configuration unless we tell you to.
+- **Do not delete** application data unless we tell you to.
+- The laptop must keep its expected network address (`192.168.4.2`) for live ESP32 communication.
+- An **internet connection is not required** for the local ESP32 → laptop monitoring to work.
 
-### Firewall blocks port 8000
-The app listens on port 8000 so the ESP32 can send data to your PC. If the
-first-run prompt was declined, allow TCP port 8000 for
-`SmartEnergyAssistant.exe` in Windows Defender Firewall (or add an inbound
-rule for TCP port 8000). Do not disable the firewall itself.
+---
 
-## 5. Updating the app
+## 11. Quick Start Checklist
 
-When you get a new `.exe`, just replace the old file and double-click again.
-Your data in `AppData\Local\SmartEnergyAssistant` is not touched and no data
-is lost.
+- [ ] ESP32 powered ON
+- [ ] PZEM connected
+- [ ] Laptop Wi-Fi ON
+- [ ] Connected to `SmartEnergy`
+- [ ] `SmartEnergyAssistant.exe` started
+- [ ] Firewall access allowed if requested
+- [ ] Dashboard opened
+- [ ] Live readings updating
+
+---
+
+## 12. Support Information
+
+For technical support, contact:
+
+**[PROJECT PROVIDER / CONTACT DETAILS]**
+
+*(This section will be completed with your provider name, email and phone number.)*
