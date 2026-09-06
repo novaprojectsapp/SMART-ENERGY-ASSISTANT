@@ -3,7 +3,9 @@ import os
 from pathlib import Path
 from dataclasses import dataclass, field
 
-TARIFF_DIR = Path(__file__).parent.parent.parent / "config" / "tariffs"
+from ..paths import tariff_dir
+
+TARIFF_DIR = tariff_dir()
 
 
 @dataclass

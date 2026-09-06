@@ -2,12 +2,12 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import JSONResponse
-from pathlib import Path
 from contextlib import asynccontextmanager
 
 from .config import settings
 from .database import init_db
 from .utils.logging import setup_logging
+from .paths import frontend_dir
 from .api.routers import (
     health,
     devices,
@@ -25,7 +25,7 @@ from .api.routers import (
 )
 
 logger = setup_logging()
-FRONTEND_DIR = Path(__file__).resolve().parent.parent.parent / "frontend"
+FRONTEND_DIR = frontend_dir()
 
 
 @asynccontextmanager

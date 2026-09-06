@@ -2,6 +2,7 @@ import os
 from pathlib import Path
 from pydantic_settings import BaseSettings
 from dotenv import load_dotenv
+from .paths import database_url
 
 BASE_DIR = Path(__file__).resolve().parent.parent.parent
 load_dotenv(BASE_DIR / ".env")
@@ -10,7 +11,7 @@ load_dotenv(BASE_DIR / ".env")
 class Settings(BaseSettings):
     APP_ENV: str = "development"
     LOG_LEVEL: str = "INFO"
-    DATABASE_URL: str = f"sqlite:///{BASE_DIR / 'smart_energy.db'}"
+    DATABASE_URL: str = database_url()
     TEST_DATABASE_URL: str = f"sqlite:///{BASE_DIR / 'test_smart_energy.db'}"
     DEVICE_API_KEY: str = "change-me-in-production"
     GEMINI_API_KEY: str = ""
