@@ -1,11 +1,11 @@
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import text
-from datetime import datetime, timezone, timedelta
 from ...database import get_db
 from ...models import Device, EnergyReading
 from ...schemas.schemas import DeviceCreate, DeviceResponse
-from ...utils.time import utcnow
+from ...utils.time import utcnow, to_iso
+from ...utils.freshness import freshness_status
 import logging
 
 logger = logging.getLogger("smart_energy.api.devices")
@@ -13,16 +13,7 @@ router = APIRouter(prefix="/api/v1/devices", tags=["devices"])
 
 
 def _device_status(device: Device, db: Session) -> str:
-    if device.last_seen is None:
-        return "NO_DATA"
-    now = utcnow()
-    last_seen = device.last_seen
-    if last_seen.tzinfo is None:
-        last_seen = last_seen.replace(tzinfo=timezone.utc)
-    threshold = now - timedelta(minutes=5)
-    if last_seen >= threshold:
-        return "ONLINE"
-    return "OFFLINE"
+    return freshness_status(device.last_seen)
 
 
 @router.post("", response_model=DeviceResponse, status_code=201)
@@ -86,9 +77,9 @@ def get_device_status(device_id: str, db: Session = Depends(get_db)):
     return {
         "device_id": device_id,
         "status": _device_status(device, db),
-        "last_seen": device.last_seen.isoformat() if device.last_seen else None,
+        "last_seen": to_iso(device.last_seen) if device.last_seen else None,
         "latest_reading": {
-            "timestamp": latest.timestamp.isoformat(),
+            "timestamp": to_iso(latest.timestamp),
             "power": latest.power,
             "voltage": latest.voltage,
             "current": latest.current,

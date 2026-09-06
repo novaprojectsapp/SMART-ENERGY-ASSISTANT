@@ -1,4 +1,7 @@
 let dashboardInterval = null;
+let clockInterval = null;
+let lastLiveTimestamp = null;
+let lastLiveReading = null;
 
 async function loadDashboard() {
     const cardsEl = document.getElementById('live-cards');
@@ -14,10 +17,12 @@ async function loadDashboard() {
             api.health(),
         ]);
 
-        updateDeviceStatus(devices);
+        updateDeviceStatus(devices, latest);
         renderConnectionCard(connectionEl, devices, latest, health);
 
         if (!latest || latest.length === 0) {
+            lastLiveTimestamp = null;
+            lastLiveReading = null;
             cardsEl.innerHTML = `
                 <div class="waiting-state" style="grid-column: 1 / -1;">
                     <div class="icon">📡</div>
@@ -30,6 +35,8 @@ async function loadDashboard() {
             return;
         }
 
+        lastLiveReading = latest[0];
+        lastLiveTimestamp = latest[0].timestamp || null;
         renderLiveCards(cardsEl, latest[0]);
         loadApplianceSection(applianceEl);
         loadInsightsSection(insightsEl);
@@ -39,10 +46,13 @@ async function loadDashboard() {
     }
 }
 
-function updateDeviceStatus(devices) {
+function updateDeviceStatus(devices, latest) {
     const label = document.getElementById('device-status-label');
     const dot = document.getElementById('status-dot');
     if (!label || !dot) return;
+
+    const live = latest && latest[0];
+    const device = live ? devices.find(d => d.id === live.device_id) : null;
 
     if (devices.length === 0) {
         label.textContent = 'No device';
@@ -50,19 +60,30 @@ function updateDeviceStatus(devices) {
         setWifiIndicator('OFFLINE', 'No Device');
         return;
     }
+    if (!device) {
+        label.textContent = (live ? live.device_id : devices[0].name) + ' - No Status';
+        dot.className = 'status-dot';
+        setWifiIndicator('OFFLINE', 'Device Not Registered');
+        return;
+    }
 
-    const d = devices[0];
-    if (d.status === 'ONLINE') {
-        label.textContent = `${d.name} - Online`;
+    const fresh = live ? freshnessFromDate(live.timestamp) : (device.status || 'NO_DATA');
+    if (fresh === 'CONNECTED') {
+        label.textContent = `${device.name} - Online`;
         dot.className = 'status-dot online';
         setWifiIndicator('ONLINE', 'Wi-Fi Connected');
-    } else if (d.status === 'OFFLINE') {
-        label.textContent = `${d.name} - Offline`;
+    } else if (fresh === 'STALE') {
+        label.textContent = `${device.name} - Updating`;
         dot.className = 'status-dot';
-        const lastSeen = d.last_seen ? ` · Last seen ${timeAgo(d.last_seen)}` : '';
+        const lastSeen = device.last_seen ? ` · Last seen ${timeAgo(device.last_seen)}` : '';
+        setWifiIndicator('CONNECTING', `ESP32 Updating${lastSeen}`);
+    } else if (fresh === 'OFFLINE') {
+        label.textContent = `${device.name} - Offline`;
+        dot.className = 'status-dot';
+        const lastSeen = device.last_seen ? ` · Last seen ${timeAgo(device.last_seen)}` : '';
         setWifiIndicator('OFFLINE', `ESP32 Offline${lastSeen}`);
     } else {
-        label.textContent = `${d.name} - No Data`;
+        label.textContent = `${device.name} - No Data`;
         dot.className = 'status-dot';
         setWifiIndicator('CONNECTING', 'Connecting...');
     }
@@ -76,51 +97,45 @@ function setWifiIndicator(state, text) {
     el.setAttribute('data-state', state.toLowerCase());
 }
 
-function connectionState(devices) {
-    if (!devices || devices.length === 0) return 'NO_DEVICE';
-    const d = devices[0];
-    if (d.status === 'ONLINE') return 'ONLINE';
-    if (d.status === 'OFFLINE') {
-        return d.last_seen ? 'STALE_DATA' : 'OFFLINE';
-    }
-    return 'CONNECTING';
+function connectionState(latest) {
+    if (!latest || latest.length === 0) return 'NO_DEVICE';
+    return freshnessFromDate(latest[0].timestamp);
 }
 
 function renderConnectionCard(container, devices, latest, health) {
     if (!container) return;
-    const device = devices && devices[0];
-    const hasReading = latest && latest.length > 0;
-    const latestReading = hasReading ? latest[0] : null;
-    const dataSource = latestReading && latestReading.data_source ? latestReading.data_source : (hasReading ? 'HARDWARE' : '—');
-    const state = connectionState(devices);
-    const lastSeen = device && device.last_seen ? timeAgo(device.last_seen) : null;
+    const live = latest && latest[0];
+    const device = live ? (devices.find(d => d.id === live.device_id) || devices[0]) : (devices && devices[0]);
+    const hasReading = !!live;
+    const dataSource = live && live.data_source ? live.data_source : (hasReading ? 'HARDWARE' : '—');
+    const state = connectionState(latest);
+    const lastSeen = live && live.timestamp ? timeAgo(live.timestamp) : (device && device.last_seen ? timeAgo(device.last_seen) : null);
 
     const serverDown = !health || health.status !== 'ok';
 
     const pzemState = hasReading ? 'ok' : 'wait';
-    const espState = state === 'ONLINE' ? 'ok' : (state === 'CONNECTING' || state === 'NO_DEVICE' ? 'wait' : 'down');
-    const wifiState = state === 'ONLINE' ? 'ok' : (state === 'NO_DEVICE' ? 'wait' : 'down');
+    const espState = state === 'CONNECTED' ? 'ok' : (state === 'STALE' ? 'wait' : (state === 'NO_DEVICE' ? 'wait' : 'down'));
+    const wifiState = state === 'CONNECTED' ? 'ok' : (state === 'NO_DEVICE' ? 'wait' : 'down');
     const serverState = !serverDown ? 'ok' : 'down';
 
     const stateMeta = {
         NO_DEVICE: { label: 'NO DEVICE', tone: 'no-data', hint: 'No ESP32 device has connected to this assistant yet.' },
-        CONNECTING: { label: 'CONNECTING', tone: 'connecting', hint: 'Device is registered but has not reported measurements yet.' },
-        ONLINE: { label: 'CONNECTED', tone: 'online', hint: 'ESP32 is streaming live measurements over Wi-Fi.' },
-        OFFLINE: { label: 'OFFLINE', tone: 'offline', hint: 'Device is registered but has no measurement history.' },
-        STALE_DATA: { label: 'STALE DATA', tone: 'offline', hint: lastSeen ? `ESP32 last reported ${lastSeen}. Wi-Fi link is down.` : 'ESP32 has not reported recently. Wi-Fi link is down.' },
+        CONNECTED: { label: 'CONNECTED', tone: 'online', hint: 'ESP32 is streaming live measurements over Wi-Fi.' },
+        STALE: { label: 'UPDATING', tone: 'connecting', hint: lastSeen ? `ESP32 last reported ${lastSeen}. Waiting for the next reading.` : 'ESP32 has not reported in the last minute. Checking again...' },
+        OFFLINE: { label: 'OFFLINE', tone: 'offline', hint: lastSeen ? `ESP32 last reported ${lastSeen}. Wi-Fi link is down.` : 'ESP32 has not reported recently. Wi-Fi link is down.' },
     }[state];
 
     container.innerHTML = `
-        <div class="section-card connection-card">
+        <div class="section-card connection-card" data-live-state="${state}">
             <div class="section-card-header">
                 <span class="section-card-title">Data Connection</span>
-                <span class="section-badge ${stateMeta.tone}">${stateMeta.label}</span>
+                <span class="section-badge ${stateMeta.tone}" id="connection-badge">${stateMeta.label}</span>
             </div>
             <div class="connection-banner">
-                <div class="connection-dot ${stateMeta.tone}"></div>
+                <div class="connection-dot ${stateMeta.tone}" id="connection-dot"></div>
                 <div class="connection-status">
-                    <div class="connection-state">${stateMeta.label}</div>
-                    <div class="connection-hint">${stateMeta.hint}</div>
+                    <div class="connection-state" id="connection-state-label">${stateMeta.label}</div>
+                    <div class="connection-hint" id="connection-hint">${stateMeta.hint}</div>
                 </div>
                 <div class="connection-datasource">
                     <span class="ds-label">Data Source</span>
@@ -137,13 +152,13 @@ function renderConnectionCard(container, devices, latest, health) {
                 <div class="chain-node ${espState}">
                     <div class="chain-icon">📟</div>
                     <div class="chain-name">ESP32-S3</div>
-                    <div class="chain-state">${espState === 'ok' ? 'Publishing' : state === 'CONNECTING' ? 'Connecting' : 'No signal'}</div>
+                    <div class="chain-state">${espState === 'ok' ? 'Publishing' : state === 'STALE' ? 'Updating' : (state === 'NO_DEVICE' ? 'Waiting' : 'No signal')}</div>
                 </div>
                 <div class="chain-link ${wifiState === 'ok' ? 'ok' : 'down'}"></div>
                 <div class="chain-node ${wifiState}">
                     <div class="chain-icon">📶</div>
                     <div class="chain-name">Wi-Fi</div>
-                    <div class="chain-state">${wifiState === 'ok' ? 'Connected' : 'Disconnected'}</div>
+                    <div class="chain-state">${wifiState === 'ok' ? 'Connected' : (state === 'NO_DEVICE' ? 'Waiting' : 'Disconnected')}</div>
                 </div>
                 <div class="chain-link ${serverState === 'ok' ? 'ok' : 'down'}"></div>
                 <div class="chain-node ${serverState}">
@@ -168,7 +183,7 @@ function renderLiveCards(container, reading) {
                 <div class="stat-card-icon power">⚡</div>
             </div>
             <div class="stat-card-value">${p.value}<span class="unit">${p.unit}</span></div>
-            <div class="stat-card-sub">Updated ${timeAgo(reading.timestamp)}</div>
+            <div class="stat-card-sub" id="live-updated">Updated ${timeAgo(reading.timestamp)}</div>
         </div>
         <div class="stat-card">
             <div class="stat-card-header">
@@ -350,14 +365,43 @@ async function loadBillingSection(container) {
     }
 }
 
+function updateLiveClock() {
+    if (!lastLiveTimestamp) return;
+    const updatedEl = document.getElementById('live-updated');
+    if (updatedEl) updatedEl.textContent = `Updated ${timeAgo(lastLiveTimestamp)}`;
+
+    const state = freshnessFromDate(lastLiveTimestamp);
+    const badge = document.getElementById('connection-badge');
+    const dot = document.getElementById('connection-dot');
+    const stateLabel = document.getElementById('connection-state-label');
+    if (!badge && !dot && !stateLabel) return;
+
+    const meta = {
+        CONNECTED: { label: 'CONNECTED', tone: 'online' },
+        STALE: { label: 'UPDATING', tone: 'connecting' },
+        OFFLINE: { label: 'OFFLINE', tone: 'offline' },
+    }[state];
+
+    if (meta) {
+        if (badge) { badge.textContent = meta.label; badge.className = `section-badge ${meta.tone}`; }
+        if (dot) dot.className = `connection-dot ${meta.tone}`;
+        if (stateLabel) stateLabel.textContent = meta.label;
+    }
+}
+
 function initDashboard() {
     loadDashboard();
-    dashboardInterval = setInterval(loadDashboard, 5000);
+    dashboardInterval = setInterval(loadDashboard, 2000);
+    clockInterval = setInterval(updateLiveClock, 1000);
 }
 
 function destroyDashboard() {
     if (dashboardInterval) {
         clearInterval(dashboardInterval);
         dashboardInterval = null;
+    }
+    if (clockInterval) {
+        clearInterval(clockInterval);
+        clockInterval = null;
     }
 }

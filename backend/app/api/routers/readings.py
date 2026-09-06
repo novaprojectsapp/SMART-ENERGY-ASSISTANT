@@ -4,7 +4,9 @@ from ...database import get_db
 from ...models import Device, EnergyReading
 from ...schemas.schemas import ReadingCreate, ReadingResponse
 from ...utils.time import utcnow
+from ...utils.freshness import freshness_status
 from ...utils.validation import validate_reading
+from ...config import settings
 import uuid
 import logging
 
@@ -75,9 +77,10 @@ def get_readings(
     return readings
 
 
-@router.get("/readings/latest")
+@router.get("/readings/latest", response_model=list[ReadingResponse])
 def get_latest_readings(db: Session = Depends(get_db)):
     from sqlalchemy import text
+    from datetime import timezone as _tz
     result = db.execute(
         text("""
             SELECT er.* FROM energy_readings er
@@ -87,4 +90,33 @@ def get_latest_readings(db: Session = Depends(get_db)):
             ) latest ON er.device_id = latest.device_id AND er.timestamp = latest.max_ts
         """)
     ).fetchall()
-    return [dict(row._mapping) for row in result]
+
+    now = utcnow()
+    readings = []
+    for row in result:
+        reading = ReadingResponse.model_validate(dict(row._mapping))
+        ts = reading.timestamp
+        if ts.tzinfo is None:
+            ts = ts.replace(tzinfo=_tz.utc)
+        reading.age_seconds = (now - ts).total_seconds()
+        reading.status = freshness_status(ts, now)
+        readings.append(reading)
+
+    primary_id = settings.PRIMARY_DEVICE_ID
+
+    def _priority(r: ReadingResponse) -> int:
+        if r.data_source == "HARDWARE" and r.device_id == primary_id:
+            return 0
+        if r.data_source == "HARDWARE":
+            return 1
+        return 2
+
+    readings.sort(key=lambda r: (_priority(r), -_ts_sort_key(r.timestamp)))
+    return readings
+
+
+def _ts_sort_key(dt) -> float:
+    from datetime import timezone as _tz
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=_tz.utc)
+    return dt.timestamp()

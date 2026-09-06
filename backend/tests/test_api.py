@@ -891,3 +891,88 @@ def test_production_db_untouched_by_scheduling_tests():
     assert "test" in test_url, "Tests must run against the isolated test DB"
     # Ensure the active engine points at the isolated test DB.
     assert "test_smart_energy" in test_url
+
+
+# ---- LIVE DATA: UTC ISO timestamps ----
+def test_latest_readings_return_utc_iso_timestamps():
+    res = client.post("/api/v1/devices", json={
+        "id": "iso-ts-dev", "name": "ISO TS Dev", "device_type": "PZEM-004T",
+    })
+    assert res.status_code == 201
+    payload = {
+        "voltage": 230.0, "current": 1.25, "power": 287.5,
+        "energy": 1.5, "frequency": 50.0, "power_factor": 0.95,
+        "data_source": "HARDWARE",
+    }
+    r = client.post("/api/v1/devices/iso-ts-dev/readings", json=payload)
+    assert r.status_code == 201
+    ts = r.json()["timestamp"]
+    assert ts.endswith("Z"), f"Expected UTC/Z timestamp, got {ts!r}"
+    # JS-parseable: ISO with Z suffix
+    from datetime import datetime, timezone
+    dt = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+    assert dt.tzinfo is not None
+
+    latest = client.get("/api/v1/readings/latest").json()
+    row = next(x for x in latest if x["device_id"] == "iso-ts-dev")
+    assert row["timestamp"].endswith("Z")
+    assert row["data_source"] == "HARDWARE"
+
+
+# ---- LIVE DATA: priority ordering ----
+def test_latest_readings_prioritize_primary_hardware_device():
+    # Re-register the firmware device id (primary) plus a sim/test device.
+    client.post("/api/v1/devices", json={
+        "id": "ESP32-S3-01", "name": "Hardware ESP32", "device_type": "PZEM-004T",
+    })
+    client.post("/api/v1/devices", json={
+        "id": "demo-sim-9", "name": "Demo Sim", "device_type": "PZEM-004T",
+    })
+
+    hw = {"voltage": 229.5, "current": 1.05, "power": 241.0, "energy": 2.0,
+          "frequency": 50.0, "power_factor": 0.94, "data_source": "HARDWARE"}
+    sim = {"voltage": 0.0, "current": 0.0, "power": 0.0, "energy": 0.0,
+           "frequency": 0.0, "power_factor": 0.0, "data_source": "SIMULATOR"}
+
+    r_hw = client.post("/api/v1/devices/ESP32-S3-01/readings", json=hw)
+    r_sim = client.post("/api/v1/devices/demo-sim-9/readings", json=sim)
+    assert r_hw.status_code == 201
+    assert r_sim.status_code == 201
+
+    latest = client.get("/api/v1/readings/latest").json()
+    assert len(latest) >= 2
+    assert latest[0]["device_id"] == "ESP32-S3-01", "Primary hardware must be first"
+    assert latest[0]["data_source"] == "HARDWARE"
+
+
+# ---- LIVE DATA: freshness thresholds ----
+def test_device_status_freshness_thresholds():
+    from app.database import SessionLocal
+    from app.models import Device
+    from datetime import datetime, timedelta, timezone
+    client.post("/api/v1/devices", json={
+        "id": "fresh-thresh-dev", "name": "Threshold Dev", "device_type": "PZEM-004T",
+    })
+    payload = {"voltage": 220.0, "current": 1.0, "power": 220.0, "energy": 1.0,
+               "frequency": 50.0, "power_factor": 0.9, "data_source": "HARDWARE"}
+    assert client.post("/api/v1/devices/fresh-thresh-dev/readings", json=payload).status_code == 201
+
+    db = SessionLocal()
+    d = db.query(Device).filter(Device.id == "fresh-thresh-dev").first()
+    assert d is not None
+    d.last_seen = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=5)
+    db.commit()
+    db.refresh(d)
+    st = client.get("/api/v1/devices/fresh-thresh-dev/status").json()
+    assert st["status"] == "CONNECTED"
+
+    d.last_seen = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=30)
+    db.commit()
+    st = client.get("/api/v1/devices/fresh-thresh-dev/status").json()
+    assert st["status"] == "STALE"
+
+    d.last_seen = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=120)
+    db.commit()
+    st = client.get("/api/v1/devices/fresh-thresh-dev/status").json()
+    assert st["status"] == "OFFLINE"
+    db.close()

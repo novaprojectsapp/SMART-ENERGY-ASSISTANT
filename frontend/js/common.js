@@ -23,6 +23,9 @@ function formatDate(iso) {
     return d.toLocaleString();
 }
 
+const FRESH_CONNECTED_S = 10;
+const FRESH_STALE_S = 60;
+
 function timeAgo(iso) {
     if (!iso) return 'never';
     const seconds = Math.floor((Date.now() - new Date(iso).getTime()) / 1000);
@@ -30,6 +33,14 @@ function timeAgo(iso) {
     if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
     if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
     return `${Math.floor(seconds / 86400)}d ago`;
+}
+
+function freshnessFromDate(iso) {
+    if (!iso) return 'NO_DATA';
+    const seconds = (Date.now() - new Date(iso).getTime()) / 1000;
+    if (seconds < FRESH_CONNECTED_S) return 'CONNECTED';
+    if (seconds < FRESH_STALE_S) return 'STALE';
+    return 'OFFLINE';
 }
 
 function showError(container, message) {

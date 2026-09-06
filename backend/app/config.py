@@ -18,6 +18,7 @@ class Settings(BaseSettings):
     GEMINI_ENABLED: bool = True
     HOST: str = "0.0.0.0"
     PORT: int = 8000
+    PRIMARY_DEVICE_ID: str = "ESP32-S3-01"
 
     class Config:
         env_file = str(BASE_DIR / ".env")

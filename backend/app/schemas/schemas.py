@@ -2,6 +2,11 @@ from pydantic import BaseModel, Field, field_validator, field_serializer, model_
 import json
 from typing import Optional
 from datetime import datetime, timezone
+from ..utils.time import to_iso
+
+
+def _dt_to_iso(v: Optional[datetime]) -> Optional[str]:
+    return to_iso(v) if v is not None else None
 
 
 class HealthResponse(BaseModel):
@@ -33,6 +38,10 @@ class DeviceResponse(BaseModel):
     class Config:
         from_attributes = True
 
+    @field_serializer("last_seen", "created_at")
+    def _serialize_dt(self, v, _info):
+        return _dt_to_iso(v)
+
 
 class ReadingCreate(BaseModel):
     timestamp: Optional[datetime] = None
@@ -57,9 +66,15 @@ class ReadingResponse(BaseModel):
     power_factor: float
     created_at: datetime
     data_source: str
+    status: Optional[str] = None
+    age_seconds: Optional[float] = None
 
     class Config:
         from_attributes = True
+
+    @field_serializer("timestamp", "created_at")
+    def _serialize_dt(self, v, _info):
+        return _dt_to_iso(v)
 
 
 class ErrorResponse(BaseModel):
