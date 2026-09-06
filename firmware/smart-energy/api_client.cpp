@@ -106,6 +106,108 @@ bool APIClient::sendMeasurement(const String& deviceId, float voltage, float cur
     return false;
 }
 
+String APIClient::_getJson(const String& url) {
+    HTTPClient http;
+    http.setTimeout(5000);
+    http.begin(url);
+
+    Serial.printf("GET %s\n", url.c_str());
+
+    int httpCode = http.GET();
+    _lastHttpResponseCode = httpCode;
+
+    String body;
+    if (httpCode > 0) {
+        body = http.getString();
+        Serial.printf("HTTP Response Code: %d\n", httpCode);
+        if (body.length() > 0) {
+            Serial.printf("Response Body: %s\n", body.c_str());
+        }
+    } else {
+        Serial.printf("HTTP Response Code: %d (connection failed)\n", httpCode);
+    }
+
+    http.end();
+    return body;
+}
+
+ControlCommandData APIClient::pollControlCommand(const String& deviceId) {
+    ControlCommandData data;
+    data.hasCommand = false;
+    data.commandId = "";
+    data.deviceId = deviceId;
+    data.applianceId = "";
+    data.channel = 0;
+    data.action = "";
+    data.expiresAt = "";
+
+    String url = _baseUrl + "/api/v1/devices/" + deviceId + "/control/pending";
+    Serial.println();
+    Serial.println("POLLING FOR CONTROL COMMANDS");
+    String body = _getJson(url);
+    int httpCode = _lastHttpResponseCode;
+
+    if (httpCode != HTTP_CODE_OK) {
+        _printHttpFailure(httpCode, body);
+        Serial.println("Control poll failed; will retry next cycle");
+        return data;
+    }
+
+    StaticJsonDocument<512> doc;
+    if (deserializeJson(doc, body)) {
+        Serial.println("Control poll: failed to parse response");
+        return data;
+    }
+
+    JsonVariant cmd = doc["command"];
+    if (cmd.isNull() || cmd["command_id"].isNull()) {
+        Serial.println("Control poll: no pending command");
+        return data;
+    }
+
+    data.hasCommand = true;
+    if (!cmd["command_id"].isNull()) data.commandId = cmd["command_id"].as<const char*>();
+    if (!cmd["device_id"].isNull()) data.deviceId = cmd["device_id"].as<const char*>();
+    if (!cmd["appliance_id"].isNull()) data.applianceId = cmd["appliance_id"].as<const char*>();
+    data.channel = cmd["channel"].isNull() ? 0 : cmd["channel"].as<int>();
+    if (!cmd["action"].isNull()) data.action = cmd["action"].as<const char*>();
+    if (!cmd["expires_at"].isNull()) data.expiresAt = cmd["expires_at"].as<const char*>();
+
+    Serial.printf("Control poll: got command id=%s channel=%d action=%s\n",
+                  data.commandId.c_str(), data.channel, data.action.c_str());
+    return data;
+}
+
+bool APIClient::acknowledgeControl(const String& deviceId, const String& commandId,
+                                   bool success, const String& relayState, const String& message) {
+    String url = _baseUrl + "/api/v1/devices/" + deviceId + "/control/" + commandId + "/ack";
+
+    Serial.println();
+    Serial.println("SENDING CONTROL ACKNOWLEDGEMENT");
+
+    StaticJsonDocument<512> doc;
+    doc["success"] = success;
+    doc["relay_state"] = relayState;
+    doc["message"] = message;
+
+    String payload;
+    serializeJson(doc, payload);
+
+    String body = _postJson(url, payload);
+    int httpCode = _lastHttpResponseCode;
+
+    if (httpCode == HTTP_CODE_OK || httpCode == HTTP_CODE_CREATED) {
+        Serial.println("CONTROL ACK SUCCESSFUL");
+        _lastSendOk = true;
+        return true;
+    }
+
+    _printHttpFailure(httpCode, body);
+    Serial.println("CONTROL ACK FAILED");
+    _lastSendOk = false;
+    return false;
+}
+
 void APIClient::_printHttpFailure(int httpCode, const String& body) {
     if (httpCode < 0) {
         Serial.println();

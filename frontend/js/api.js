@@ -108,4 +108,6 @@ const api = {
     disableSchedule: (id) => api.post(`/schedules/${id}/disable`),
     getControlCommands: (limit = 50) => api.get(`/control-commands?limit=${limit}`),
     runScheduler: () => api.post('/scheduler/run'),
+    getDeviceControlStatus: (id) => api.get(`/devices/${id}/control/status`),
+    getPendingControl: (id) => api.get(`/devices/${id}/control/pending`),
 };

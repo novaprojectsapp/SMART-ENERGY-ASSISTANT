@@ -13,9 +13,17 @@ for each cycle. Overnight pairs (OFF earlier than ON, e.g. ON 23:00 / OFF 06:00)
 interpret the OFF as occurring the following day. Duplicate execution is
 prevented: each event fires at most once per cycle.
 
-The scheduler NEVER touches GPIO directly. It produces a ControlCommand
-that a hardware adapter (ESP32 Control) would later deliver to a relay.
-Until that adapter has hardware, commands remain PENDING/SIMULATED.
+OVERLAPPING SCHEDULES
+---------------------
+An automatic OFF event never fires for an appliance while ANOTHER enabled
+schedule window still requires the appliance to be ON. Each schedule's event is
+still recorded (so its own cycle advances), but the OFF command is suppressed.
+This prevents one schedule ending (e.g. 22:00) from switching the relay off
+while a second schedule (e.g. until 23:00) still requires power.
+
+The scheduler NEVER touches GPIO directly. It produces a PENDING ControlCommand
+that the ESP32 polls and acknowledges. Commands are only marked EXECUTED after
+a real ESP32 acknowledgement.
 """
 import json
 import logging
@@ -25,7 +33,7 @@ from zoneinfo import ZoneInfo
 from sqlalchemy.orm import Session
 
 from ..models import Appliance, Schedule, ControlCommand
-from .esp32_control import ESP32ControlService, HARDWARE_CONTROL_NOT_AVAILABLE
+from .control_service import ControlService
 from ..utils.time import utcnow
 
 logger = logging.getLogger("smart_energy.scheduler")
@@ -184,6 +192,64 @@ class SchedulerService:
                 return off_utc
         return None
 
+    # ------------------------------------------------------------------
+    # Desired-state evaluation (overlapping-schedule protection)
+    # ------------------------------------------------------------------
+    def _window_covers(self, schedule: Schedule, now: datetime) -> bool:
+        """True if `now` (naive UTC) is inside an ON/OFF window of this schedule.
+
+        Only ON/OFF pair schedules define a continuous window. Single-event
+        schedules do not contribute to the overlap check. Overnight windows
+        (OFF < ON) span midnight and are handled by checking the previous
+        day's anchor too."""
+        if not self._has_off(schedule):
+            return False
+        now_u = _naive_utc(now)
+        if now_u is None:
+            return False
+        zone = self.get_zone(schedule)
+        local_now = now_u.replace(tzinfo=timezone.utc).astimezone(zone)
+        candidates = {local_now.date(), local_now.date() - timedelta(days=1)}
+        for day in candidates:
+            on_utc, off_utc = self._cycle_local(schedule, day)
+            if on_utc is None or off_utc is None:
+                continue
+            on_u = _naive_utc(on_utc)
+            off_u = _naive_utc(off_utc)
+            # A single cycle always ends the same day it starts, or next for
+            # overnight, so on < off for a valid pair within one anchor day.
+            if on_u <= now_u < off_u:
+                return True
+        return False
+
+    def appliance_requires_on(self, appliance_id: str, now: datetime) -> bool:
+        """True if ANY enabled schedule currently requires this appliance ON.
+
+        Used to suppress an automatic OFF event when another schedule window
+        still overlaps today's schedule."""
+        now_u = _naive_utc(now) or _naive_utc(utcnow())
+        for schedule in self.db.query(Schedule).filter(Schedule.appliance_id == appliance_id).all():
+            if not schedule.enabled:
+                continue
+            if schedule.schedule_type == "WEEKLY":
+                local = _naive_utc(now_u).replace(tzinfo=timezone.utc).astimezone(self.get_zone(schedule))
+                if local.weekday() not in self._parse_days(schedule):
+                    continue
+            if schedule.schedule_type == "ONCE":
+                # A ONCE schedule only requires ON on its own cycle day; once
+                # both events are processed (next_execution_at cleared) it no
+                # longer contributes to the desired state.
+                if schedule.next_execution_at is None:
+                    continue
+            if self._window_covers(schedule, now_u):
+                return True
+        return False
+
+    def desired_state_for(self, appliance: Appliance, now: datetime) -> str:
+        """Desired ON/OFF state for an appliance at `now` according to all
+        enabled schedules."""
+        return "ON" if self.appliance_requires_on(appliance.id, now) else "OFF"
+
     def refresh_next_execution(self, schedule: Schedule, now: datetime | None = None):
         """Set next_execution_at to the next pending event (ON or OFF), or None."""
         now = _naive_utc(now) or _naive_utc(utcnow())
@@ -252,26 +318,35 @@ class SchedulerService:
         # Determine which event is firing now: the stored next_execution_at tells us.
         action = self._event_action_at(schedule, now)
 
-        hardware = ESP32ControlService()
-        hw = hardware.turn_on(appliance) if action == "ON" else hardware.turn_off(appliance)
+        if action not in ("ON", "OFF"):
+            action = schedule.action
 
-        if hw.get("status") == HARDWARE_CONTROL_NOT_AVAILABLE:
-            status = "PENDING"
-            message = "SIMULATED: %s would turn %s. Hardware control is not connected yet." % (
+        # Overlap protection: never emit an automatic OFF while another enabled
+        # schedule window still requires this appliance to be ON. The event is
+        # still recorded (cycle advances) but no OFF command is created.
+        if action == "OFF" and self.appliance_requires_on(appliance.id, now):
+            schedule.last_executed_at = now
+            self.refresh_next_execution(schedule, now)
+            logger.info(
+                "Schedule %s OFF suppressed for %s: another schedule window still requires ON",
+                schedule.id,
                 appliance.name,
-                action,
             )
-        else:
-            status = "SENT"
-            message = "%s command sent to hardware for %s." % (action, appliance.name)
+            return None
 
-        cmd = ControlCommand(
-            appliance_id=appliance.id,
-            action=action,
-            source="SCHEDULE",
-            status=status,
-            message=message,
-        )
+        control = ControlService(self.db)
+        try:
+            cmd = control.create_command(
+                appliance_id=appliance.id,
+                action=action,
+                source="SCHEDULE",
+            )
+        except ValueError as exc:
+            logger.warning("Schedule %s: %s", schedule.id, exc)
+            schedule.last_executed_at = now
+            self.refresh_next_execution(schedule, now)
+            return None
+
         self.db.add(cmd)
 
         schedule.last_executed_at = now

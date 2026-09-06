@@ -18,5 +18,7 @@ class Appliance(Base):
     channel = Column(Integer, default=1)
     enabled = Column(Boolean, default=True)
     control_capable = Column(Boolean, default=True)
+    last_confirmed_state = Column(String(16), default="UNKNOWN")
+    last_control_at = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utcnow)
     updated_at = Column(DateTime, default=utcnow, onupdate=utcnow)

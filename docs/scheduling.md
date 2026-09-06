@@ -2,16 +2,14 @@
 
 This document describes the appliance scheduling and control feature.
 
-> **STATUS: SCHEDULING SOFTWARE SUPPORTS ON/OFF TIMES — PHYSICAL APPLIANCE CONTROL PENDING HARDWARE.**
+> **STATUS: REAL ESP32 RELAY CONTROL — ACTIVE-LOW GPIO 40.**
 >
-> The software can register appliances, build recurring **ON/OFF time-pair**
-> schedules (ONCE / DAILY / WEEKLY), run a timezone-aware scheduler engine that
-> emits independent ON and OFF events (including overnight pairs), and record
-> control commands. Real physical switching (turning a relay on/off on the ESP32)
-> is **not yet connected**. Until the ESP32 relay firmware/hardware exists, every
-> control command is returned honestly as **SIMULATED / PENDING** with the message
-> *"Hardware control is not connected yet."* The system never claims it turned a
-> device on or off on real hardware.
+> Scheduling is fully wired to the **ESP32-S3-01** firmware over the device's
+> access-point network. The backend never touches GPIO directly: every ON/OFF
+> request is persisted as a **PENDING control command** that the ESP32 polls every
+> ~1 second, executes on the relay (GPIO 40, active-low), and acknowledges. A
+> command is only marked **EXECUTED** after a real ESP32 acknowledgement. The
+> system never claims it turned a device on or off on real hardware without an ACK.
 
 ---
 
@@ -26,56 +24,74 @@ It adds:
   (e.g. ON 23:00 → OFF 06:00 the next day) and independent ON / OFF events
 - A **scheduler engine** that tracks the next ON and next OFF separately, finds
   due events with a duplicate-prevention guard, and produces control commands
-- **Manual control** for registered appliances
-- An **ESP32 control adapter** that returns `HARDWARE_CONTROL_NOT_AVAILABLE` until
-  relay hardware is present
+- **Overlapping-schedule protection**: an automatic OFF event is suppressed when
+  another enabled schedule window still requires the appliance to be ON
+- A **background scheduler loop** (single daemon thread, started with the FastAPI
+  lifespan) that runs due schedules automatically — no manual trigger needed
+- **Manual control** for registered appliances, enqueued as PENDING commands
+- An **ESP32 control adapter** backed by a poll/ack command queue
 - **Voice / AI scheduling intents** with deterministic natural-language extraction
   and clarification ("Which appliance do you mean: …?", "What time should I turn
   it off?", "What time should I turn it on?")
-- A **Smart Scheduler** page in the dashboard with ON/OFF inputs and next-ON/next-OFF
-  display
+- A **Smart Scheduler** page in the dashboard that shows live ESP32 connection
+  status, confirmed relay state, and the command lifecycle
 
 Existing PZEM ingestion, billing, Tamil Nadu tariff, the G4 appliance AI safety
-gate, the simulator, voice machinery, GPIO17/18, and the readings API are
+gate, the simulator, voice machinery, PZEM GPIO 17/18, and the readings API are
 **unchanged**.
 
 ---
 
 ## Architecture
 
+The control path is a **command queue**, not a direct backend→ESP32 connection.
+The backend persists a `PENDING` command; the ESP32 polls it, drives the relay,
+and acknowledges the result.
+
 ```
 Voice / AI intent -----------------------.
-                                          v
-                     +-----------------------------------------+
-Frontend (Smart      | backend/app/api/routers/scheduling.py   |
-Scheduler page) ---->|  appliances / schedules / control      |
-                     +-----------------------------------------+
-                                          |
+                                           v
+                      +------------------------------------------+
+Frontend (Smart      | backend/app/api/routers/scheduling.py    |
+Scheduler page) ---->|  appliances / schedules / control        |
+                      +------------------------------------------+
+                                           |
               +---------------------------+----------------------------+
               v                            v                            v
-  +---------------------+        +--------------------+   +--------------------------+
-  | SchedulerService    |        | ScheduleActions    |   | ESP32ControlService       |
-  | (engine, tz-aware)  |        | (voice resolution) |   | (adapter)                 |
-  +---------------------+        +--------------------+   | HARDWARE_CONTROL_         |
-              |                                |          | NOT_AVAILABLE             |
-              v                                v          +--------------------------+
-        ControlCommand -------> SQLite (schedules, appliances, control_commands)
+  +---------------------+        +--------------------+   +------------------------------+
+  | SchedulerService    |        | ScheduleActions    |   | ControlService               |
+  | (engine, tz-aware)  |        | (voice resolution) |   | create/pending/dispatch/ack  |
+  +---------------------+        +--------------------+   +------------------------------+
+              |                                |                            |
+              v                                v                            v
+        ControlCommand (PENDING) -------> SQLite (schedules, appliances, control_commands)
+                                                        ^
+                                    HTTP poll + ack     |
+                      +-----------------legal-----------+ /api/v1/devices/{id}/control/{pending|ack}
+                      |                    |
+              +-------+--------+    +------+----------------------+
+              | ESP32-S3-01    |    | RelayManager GPIO 40        |
+              | firmware: poll |--> | active-low (ON=LOW/OFF=HIGH)|
+              | every ~1s      |    +-----------------------------+
+              +----------------+
 ```
 
 ### New models
 
 | Model | Table | Purpose |
 |-------|-------|---------|
-| `appliance.py`  | `appliances`        | Registered appliances (type, channel, `control_capable`) |
+| `appliance.py`  | `appliances`        | Registered appliances (type, channel, `control_capable`, `last_confirmed_state`, `last_control_at`) |
 | `schedule.py`   | `schedules`         | Recurring ON/OFF schedules (type, time, days, enabled) |
-| `control_command.py` | `control_commands` | Persistent record of every control attempt + its status |
+| `control_command.py` | `control_commands` | Persistent record of every control attempt + lifecycle state |
 
 ### New services / AI
 
 | File | Purpose |
 |------|---------|
-| `services/scheduler.py` | Timezone-aware engine (`Asia/Kolkata` default): computes next execution, finds due schedules with a duplicate-prevention guard, executes and records commands |
-| `services/esp32_control.py` | Hardware adapter. Returns `HARDWARE_CONTROL_NOT_AVAILABLE` when no relay hardware is connected |
+| `services/scheduler.py` | Timezone-aware engine (`Asia/Kolkata` default): computes next execution, finds due schedules with a duplicate-prevention guard, suppresses overlapping OFF events, creates PENDING commands |
+| `services/scheduler_loop.py` | Background loop: single daemon thread started with the FastAPI lifespan, own DB session per iteration, survives failures, disabled under `APP_TESTING=1` |
+| `services/control_service.py` | Control command lifecycle: create (PENDING + TTL), pending lookup, dispatch/expiry, idempotent ESP32 acknowledgement |
+| `services/esp32_control.py` | Hardware adapter used by the scheduling API to enqueue PENDING commands |
 | `ai/schedule_parser.py` | Deterministic NL extraction (time, recurrence, action, appliance ref) with no external LLM dependency |
 | `ai/schedule_actions.py` | Appliance resolution (exact + fuzzy with ambiguity detection), schedule CRUD, clarification, multi-turn draft store |
 
@@ -106,8 +122,11 @@ Scheduler page) ---->|  appliances / schedules / control      |
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/api/v1/appliances/{id}/control` | POST | Manual control (ON/OFF), source USER/VOICE; returns honest status |
-| `/api/v1/control-commands` | GET | Recent control command history |
+| `/api/v1/appliances/{id}/control` | POST | Manual control (ON/OFF), source USER/VOICE/SCHEDULE; creates a PENDING command and returns it |
+| `/api/v1/devices/{device_id}/control/pending` | GET | ESP32 polling endpoint: returns the next non-expired PENDING command for the device (or `command: null`) |
+| `/api/v1/devices/{device_id}/control/{command_id}/ack` | POST | ESP32 acknowledgement: marks EXECUTED (success) or FAILED; device-mismatched ACKs are rejected with 403 |
+| `/api/v1/devices/{device_id}/control/status` | GET | Live control status for a device (hardware availability + appliances + confirmed states) |
+| `/api/v1/control-commands` | GET | Recent control command history (full lifecycle fields) |
 
 ### Schedules
 
@@ -147,14 +166,36 @@ Each API schedule response includes the computed **`next_on_at`** and **`next_of
 (naive-UTC datetimes). For overnight pairs the OFF is correctly reported on the day
 after the ON.
 
-### Control honesty rules
+### Control lifecycle (real ESP32 relay)
 
-- Routing an ON/OFF goes through `ESP32ControlService`. Until relay hardware
-  acknowledges, the response is:
-  - `status = "SIMULATED"` (manual / voice) or `"PENDING"` (scheduler)
-  - `message = "SIMULATED: <name> would turn ON/OFF. Hardware control is not connected yet."`
-  - `hardware_control_available = false`
-- The system never claims it physically turned a device on or off.
+Commands move through a strict lifecycle. The backend **never** toggles GPIO and
+**never** marks a command `EXECUTED` until the ESP32 acknowledges it:
+
+```
+PENDING (created, valid for 60s by default)
+   │  ESP32 polls /control/pending (every ~1s)
+   ▼
+DISPATCHED (returned to the device, attempt_count += 1)
+   │  ESP32 actuates relay on GPIO 40 (active-low) then POSTs /control/{id}/ack
+   ├── success=true  ──►  EXECUTED  (+ confirmed_relay_state, appliance.last_confirmed_state)
+   └── success=false ──►  FAILED
+   │  (expires_at passed before any ack) ──► EXPIRED (never executed)
+```
+
+Honesty rules:
+
+- Every manual, voice, or scheduled command returns **`PENDING`** — the backend
+  confirms it queued the command for the ESP32, nothing more.
+- **`EXECUTED`** is only set by an acknowledgement from the device that owns the
+  command; ACKs from a different device are rejected (403).
+- ACK handling is **idempotent**: a duplicate ACK never corrupts state or re-runs
+  the relay (the firmware also keeps the last command id and re-ACKs, not
+  re-executes, a repeated poll).
+- Commands expire after the TTL (`SEA_CONTROL_TTL_SECONDS`, default **60s**) and
+  are never delivered to or executed by the ESP32 after expiry.
+- Scheduled automatic **OFF** events are suppressed when any other enabled
+  schedule window still requires the appliance ON (no relay flapping at 22:00
+  when another schedule runs until 23:00).
 
 ---
 
@@ -179,7 +220,7 @@ Examples:
 | `turn on pump 1 at 6 PM every day` (ON only) | *"… What time should I turn it off?"* (clarification) |
 | `turn off fan 2 at 11 PM` (OFF only) | *"… What time should I turn it on?"* (clarification) |
 | `show my schedules` | Lists schedules |
-| `turn off fan 1` | Records a SIMULATED OFF command |
+| `turn off fan 1` | Queues a PENDING OFF command for the ESP32 (waits for ACK) |
 | `disable the pump schedule` | Disables matching schedule(s) |
 | `schedule the bulb` (two bulbs) | *"Which appliance do you mean: Bulb A, Bulb B?"* |
 | `schedule the socket` (no time) | *"… What time?"* |
@@ -197,14 +238,21 @@ Rules:
 
 Located at `frontend/js/scheduler.js`, reachable via the **Smart Scheduler** nav item:
 
-- **Connected Appliances** cards with manual ON/OFF (recorded as SIMULATED) and delete
+- **ESP32 status banner**: polls `GET /devices/{primary}/control/status` every ~3s —
+  shows the device as **ESP32-S3-01 online** (with the last confirmed relay state)
+  or offline, plus per-appliance confirmed state
+- **Connected Appliances** cards with manual ON/OFF and delete. Manual controls run
+  a live flow: *"Sending command…" → "Waiting for ESP32…" → "ESP32 confirmed ON" /
+  "ESP32 reported failure"*, polled via the pending/ack endpoints
 - **Add Appliance** form (name, type, channel, device)
 - **Schedules** table with ON/OFF times and **Next (next ON / next OFF)** column,
   plus edit, enable/disable, and delete; weekly day checkboxes
 - **Add/Edit Schedule** form with ONCE/DAILY/WEEKLY repeat, an **ON Time** and an
   **OFF Time** input (overnight pairs allowed), and a day picker
-- **Control Command History** with an honest footnote:
-  *"Hardware control is not connected yet — commands are recorded as SIMULATED/PENDING until ESP32 relay control firmware is integrated."*
+- **Control Command History** with lifecycle badges — PENDING, DISPATCHED,
+  **EXECUTED**, **FAILED**, **EXPIRED** — including the confirmed relay state
+- Page lifecycle: the polling timer is torn down via `destroyScheduler()` when the
+  dashboard unloads the page, so background polling stops (single interval, no leaks)
 
 ---
 
@@ -218,11 +266,16 @@ python -m pytest backend/tests/ -v
 - `backend/tests/test_api.py`: appliance/schedule/control CRUD, scheduler engine
   (due-once, disabled/deleted skip, duplicate-prevention, next-execution),
   **ON/OFF pair creation (daily/weekly), overnight pairs, ON≠OFF validation,
-  weekly-requires-day validation, pair execution, overnight next-ON/next-OFF**
-  control honesty, and a test that asserts tests run against the isolated test DB.
+  weekly-requires-day validation, pair execution, overnight next-ON/next-OFF**,
+  and the **real ESP32 control lifecycle** (manual ON/OFF → PENDING, pending
+  returned only to the owning device, ACK success → EXECUTED + confirmed state,
+  ACK failure → FAILED, idempotent re-ACK, wrong-device ACK → 403, expiry,
+  DAILY/WEEKLY/ONCE/overnight scheduling, overlapping-schedule OFF suppression,
+  disabled/deleted schedules emit nothing, background loop start-once, primary
+  ESP32-S3-01 unchanged, and PZEM ingestion still intact).
 - `backend/tests/test_scheduling_voice.py`: voice create (pair + from/to ranges),
-  clarify missing ON / missing OFF, list / manual / disable / delete and
-  clarification paths, in a freshly reset isolated DB.
+  clarify missing ON / missing OFF, list / **manual (PENDING)** / disable / delete
+  and clarification paths, in a freshly reset isolated DB.
 
 Tests run with `APP_TESTING=1` set before import so they use
 `test_smart_energy.db` and never touch `smart_energy.db`.
@@ -231,7 +284,11 @@ Tests run with `APP_TESTING=1` set before import so they use
 
 ## Production database safety
 
-The production database (`smart_energy.db`) is intentionally left at its original
-state — **2 devices / 8 HARDWARE readings** — with no appliances, schedules, or
-control commands created by the feature. As soon as real hardware is available,
-follow `docs/hardware-validation/` for integrating the ESP32 relay control path.
+The production database (`smart_energy.db`) is upgraded **in place** on first run
+by a safe migration (`database.py::_safe_migrate`) that only adds the new
+`control_commands` / `appliances` columns (`command_id`, `device_id`, `channel`,
+`confirmed_relay_state`, `expires_at`, `dispatched_at`, `acknowledged_at`,
+`executed_at`, `attempt_count`, `last_confirmed_state`, `last_control_at`) — no
+existing data is dropped or rewritten. The primary ESP32 device stays
+**ESP32-S3-01**; PZEM readings, billing, analytics, voice, and the EXE packaging
+are unchanged.

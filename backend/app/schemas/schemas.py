@@ -86,8 +86,8 @@ class ErrorResponse(BaseModel):
 APPLIANCE_TYPES = {"BULB", "LIGHT", "FAN", "TV", "AC", "PUMP", "SOCKET", "OTHER"}
 SCHEDULE_ACTIONS = {"ON", "OFF"}
 SCHEDULE_TYPES = {"ONCE", "DAILY", "WEEKLY", "AFTER_DURATION"}
-CONTROL_SOURCES = {"USER", "SCHEDULE", "VOICE"}
-CONTROL_STATUSES = {"PENDING", "SENT", "ACKNOWLEDGED", "FAILED", "SIMULATED"}
+CONTROL_SOURCES = {"USER", "SCHEDULE", "VOICE", "SYSTEM"}
+CONTROL_STATUSES = {"PENDING", "DISPATCHED", "EXECUTED", "FAILED", "EXPIRED", "ACKNOWLEDGED", "SIMULATED"}
 
 
 class ApplianceCreate(BaseModel):
@@ -129,11 +129,28 @@ class ApplianceResponse(BaseModel):
     channel: int
     enabled: bool
     control_capable: bool
+    last_confirmed_state: str = "UNKNOWN"
+    last_control_at: Optional[datetime] = None
     created_at: datetime
     updated_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+
+
+class ApplianceControlResponse(BaseModel):
+    status: str
+    message: str
+    hardware_control_available: bool = True
+    command_id: Optional[str] = None
+    appliance: Optional[str] = None
+    action: Optional[str] = None
+    source: Optional[str] = None
+    expires_at: Optional[datetime] = None
+
+    @field_serializer("expires_at")
+    def _serialize_dt(self, v, _info):
+        return _dt_to_iso(v)
 
 
 class ScheduleCreate(BaseModel):
@@ -258,21 +275,32 @@ class ScheduleResponse(BaseModel):
 class ControlCommandCreate(BaseModel):
     appliance_id: str = Field(..., min_length=1, max_length=64)
     action: str = Field(..., pattern="^(ON|OFF)$")
-    source: str = Field(default="USER", pattern="^(USER|SCHEDULE|VOICE)$")
+    source: str = Field(default="USER", pattern="^(USER|SCHEDULE|VOICE|SYSTEM)$")
 
 
 class ControlCommandResponse(BaseModel):
     id: str
+    command_id: str = ""
+    device_id: str = ""
     appliance_id: str
+    channel: int = 1
     action: str
     source: str
     status: str
     message: str
     hardware_control_available: bool = False
+    confirmed_relay_state: str = "UNKNOWN"
     created_at: datetime
+    expires_at: Optional[datetime] = None
+    acknowledged_at: Optional[datetime] = None
+    executed_at: Optional[datetime] = None
 
     class Config:
         from_attributes = True
+
+    @field_serializer("created_at", "expires_at", "acknowledged_at", "executed_at")
+    def _serialize_dt(self, v, _info):
+        return _dt_to_iso(v)
 
 
 class ControlApiResponse(BaseModel):
@@ -280,3 +308,34 @@ class ControlApiResponse(BaseModel):
     command: Optional[dict] = None
     hardware_control_available: bool = False
     message: str
+
+
+class PendingCommand(BaseModel):
+    id: str
+    command_id: str
+    device_id: str
+    appliance_id: str
+    channel: int
+    action: str
+    created_at: Optional[datetime] = None
+    expires_at: Optional[datetime] = None
+
+    @field_serializer("created_at", "expires_at")
+    def _serialize_dt(self, v, _info):
+        return _dt_to_iso(v)
+
+
+class PendingCommandResponse(BaseModel):
+    command: Optional[PendingCommand] = None
+
+
+class CommandAckRequest(BaseModel):
+    success: bool
+    relay_state: str = Field(default="UNKNOWN", pattern="^(ON|OFF|UNKNOWN)$")
+    message: str = ""
+
+
+class CommandAckResponse(BaseModel):
+    status: str
+    command_id: str
+    acknowledged: bool = True

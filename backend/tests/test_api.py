@@ -806,12 +806,13 @@ def test_scheduler_due_executes_once_and_duplicate_prevented():
     commands2 = svc.run_due()
     assert commands2 == []
 
-    # Verify a control command row was persisted and honestly marked SIMULATED (no hardware).
+# Verify a control command row was persisted and honestly marked PENDING
+    # (waiting for ESP32 acknowledgement, never prematurely EXECUTED).
     cmd_count = db.query(ControlCommand).filter(ControlCommand.appliance_id == app["id"]).count()
     assert cmd_count >= 1
     new_cmd = db.query(ControlCommand).filter(ControlCommand.appliance_id == app["id"]).order_by(ControlCommand.created_at.desc()).first()
     assert new_cmd.status == "PENDING"
-    assert "Hardware control is not connected yet" in new_cmd.message
+    assert "queued for ESP32" in new_cmd.message
     db.close()
 
 
@@ -863,16 +864,22 @@ def test_scheduler_next_execution_computed():
 
 
 # ---- CONTROL (manual) ----
-def test_control_honest_simulated_response():
+def test_control_creates_pending_command():
     app = _make_sched_appliance(name="Sched CtrlBulb")
     r = client.post(f"/api/v1/appliances/{app['id']}/control", json={
         "appliance_id": app["id"], "action": "ON", "source": "USER",
     })
     assert r.status_code == 201
     data = r.json()
-    assert data["status"] == "SIMULATED"
-    assert "Hardware control is not connected yet" in data["message"]
-    assert data["hardware_control_available"] is False
+    assert data["status"] == "PENDING"
+    assert "queued for ESP32" in data["message"]
+    assert data["hardware_control_available"] is True
+    assert data["command_id"]
+
+    # No false hardware success: the command must NOT be EXECUTED yet.
+    cmds = client.get("/api/v1/control-commands?limit=50").json()
+    mine = [c for c in cmds if c["command_id"] == data["command_id"]]
+    assert mine and mine[0]["status"] == "PENDING"
 
 
 def test_control_non_capable_rejected():
@@ -1063,3 +1070,448 @@ def test_voice_query_accepts_basic_text():
         body = res.json()
         assert body["intent"]
         assert isinstance(body["response"], str) and len(body["response"]) > 0
+
+
+# ============================================================================
+# REAL ESP32 RELAY CONTROL (command queue + polling + acknowledgement)
+# ============================================================================
+
+_hw_seq = 0
+
+
+def _make_hw_appliance(device_id=None, name=None, channel=1):
+    """Register a dedicated ESP32 device + a control-capable appliance.
+
+    Each call gets its own device so pending command queues never leak
+    between tests (the polling endpoint returns the oldest pending command)."""
+    global _hw_seq
+    _hw_seq += 1
+    if device_id is None:
+        device_id = f"esp-hw-{_hw_seq}"
+    if name is None:
+        name = f"Sockets {_hw_seq}"
+    r = client.post("/api/v1/devices", json={"id": device_id, "name": device_id, "device_type": "PZEM-004T"})
+    if r.status_code not in (201, 409):
+        raise AssertionError(r.text)
+    r = client.post("/api/v1/appliances", json={
+        "name": name, "type": "SOCKET", "channel": channel,
+        "device_id": device_id, "control_capable": True,
+    })
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def _create_manual_command(app, action="ON"):
+    r = client.post(f"/api/v1/appliances/{app['id']}/control", json={
+        "appliance_id": app["id"], "action": action, "source": "USER",
+    })
+    assert r.status_code == 201, r.text
+    return r.json()
+
+
+def test_control_pending_lifecycle_manual_on_and_off():
+    """Manual ON and OFF each create a PENDING hardware command."""
+    app = _make_hw_appliance()
+    on_cmd = _create_manual_command(app, "ON")
+    off_cmd = _create_manual_command(app, "OFF")
+    assert on_cmd["status"] == "PENDING"
+    assert off_cmd["status"] == "PENDING"
+    assert on_cmd["command_id"] != off_cmd["command_id"]
+    assert on_cmd["action"] == "ON"
+    assert off_cmd["action"] == "OFF"
+    assert on_cmd["hardware_control_available"] is True
+
+
+def test_pending_command_returns_to_owning_device_only():
+    """The pending polling endpoint returns the command only to the owning device."""
+    client.post("/api/v1/devices", json={"id": "other-esp32", "name": "Other", "device_type": "PZEM-004T"})
+    app = _make_hw_appliance()
+    did = app["device_id"]
+    cmd = _create_manual_command(app, "ON")
+
+    # Owning device receives it.
+    res = client.get(f"/api/v1/devices/{did}/control/pending")
+    assert res.status_code == 200
+    data = res.json()
+    assert data["command"] is not None
+    assert data["command"]["command_id"] == cmd["command_id"]
+    assert data["command"]["channel"] == 1
+    assert data["command"]["action"] == "ON"
+
+    # Another registered device must NOT receive it.
+    res2 = client.get("/api/v1/devices/other-esp32/control/pending")
+    assert res2.status_code == 200
+    assert res2.json()["command"] is None
+
+    # Clean up the pending command so it does not leak into later tests.
+    cid = data["command"]["command_id"]
+    assert client.post(f"/api/v1/devices/{did}/control/{cid}/ack", json={
+        "success": True, "relay_state": "ON", "message": "ack"
+    }).status_code == 200
+
+
+def test_pending_not_returned_to_unregistered_device():
+    client.post("/api/v1/devices", json={"id": "ghost-dev", "name": "Ghost", "device_type": "PZEM-004T"})
+    _make_hw_appliance()
+    _create_manual_command(_make_hw_appliance(), "ON")
+    # The endpoint requires the device to be registered.
+    res = client.get("/api/v1/devices/unregistered-xyz/control/pending")
+    assert res.status_code == 404
+
+
+def test_ack_success_marks_executed():
+    app = _make_hw_appliance()
+    did = app["device_id"]
+    cmd = _create_manual_command(app, "ON")
+    cid = cmd["command_id"]
+
+    pending = client.get(f"/api/v1/devices/{did}/control/pending").json()["command"]
+    assert pending["command_id"] == cid
+
+    r = client.post(f"/api/v1/devices/{did}/control/{cid}/ack", json={
+        "success": True, "relay_state": "ON", "message": "Relay switched ON successfully",
+    })
+    assert r.status_code == 200
+    assert r.json()["acknowledged"] is True
+
+    cmds = client.get("/api/v1/control-commands?limit=200").json()
+    mine = [c for c in cmds if c["command_id"] == cid]
+    assert mine and mine[0]["status"] == "EXECUTED"
+    assert mine[0]["confirmed_relay_state"] == "ON"
+    assert mine[0]["executed_at"] is not None
+
+    # After EXECUTED, the polling endpoint no longer returns it.
+    res = client.get(f"/api/v1/devices/{did}/control/pending").json()
+    assert res["command"] is None
+
+    # Appliance confirmed state must now be ON.
+    app_resp = client.get(f"/api/v1/appliances/{app['id']}").json()
+    assert app_resp["last_confirmed_state"] == "ON"
+
+
+def test_ack_failure_marks_failed():
+    app = _make_hw_appliance()
+    did = app["device_id"]
+    cmd = _create_manual_command(app, "OFF")
+    cid = cmd["command_id"]
+    r = client.post(f"/api/v1/devices/{did}/control/{cid}/ack", json={
+        "success": False, "relay_state": "UNKNOWN", "message": "Relay execution failed",
+    })
+    assert r.status_code == 200
+    cmds = client.get("/api/v1/control-commands?limit=50").json()
+    mine = [c for c in cmds if c["command_id"] == cid]
+    assert mine and mine[0]["status"] == "FAILED"
+    assert mine[0]["confirmed_relay_state"] in ("UNKNOWN", "OFF")
+
+
+def test_repeated_ack_idempotent_no_state_corruption():
+    """A duplicate/second ACK must not corrupt command state or re-execute."""
+    app = _make_hw_appliance()
+    did = app["device_id"]
+    cmd = _create_manual_command(app, "ON")
+    cid = cmd["command_id"]
+    ack_payload = {"success": True, "relay_state": "ON", "message": "Relay switched ON successfully"}
+    assert client.post(f"/api/v1/devices/{did}/control/{cid}/ack", json=ack_payload).status_code == 200
+    # Re-acknowledge safely (ESP32 re-polls the same ID guard case).
+    assert client.post(f"/api/v1/devices/{did}/control/{cid}/ack", json=ack_payload).status_code == 200
+    cmds = client.get("/api/v1/control-commands?limit=200").json()
+    mine = [c for c in cmds if c["command_id"] == cid]
+    assert mine and mine[0]["status"] == "EXECUTED"
+    assert mine[0]["confirmed_relay_state"] == "ON"
+
+
+def test_ack_by_wrong_device_rejected():
+    client.post("/api/v1/devices", json={"id": "thief-dev", "name": "Thief", "device_type": "PZEM-004T"})
+    app = _make_hw_appliance()
+    cmd = _create_manual_command(app, "ON")
+    r = client.post(f"/api/v1/devices/thief-dev/control/{cmd['command_id']}/ack", json={
+        "success": True, "relay_state": "ON", "message": "wrong device",
+    })
+    assert r.status_code == 403
+    cmds = client.get("/api/v1/control-commands?limit=200").json()
+    mine = [c for c in cmds if c["command_id"] == cmd["command_id"]]
+    assert mine and mine[0]["status"] == "PENDING"  # unchanged
+
+
+def test_ack_by_unregistered_device_404():
+    app = _make_hw_appliance()
+    cmd = _create_manual_command(app, "OFF")
+    r = client.post(f"/api/v1/devices/no-such-device/control/{cmd['command_id']}/ack", json={
+        "success": True, "relay_state": "OFF", "message": "x",
+    })
+    assert r.status_code == 404
+
+
+def test_expired_command_not_returned_and_marked_expired():
+    from app.database import SessionLocal
+    from app.models import ControlCommand as CC
+    from datetime import datetime, timedelta, timezone
+    app = _make_hw_appliance()
+    did = app["device_id"]
+    cmd = _create_manual_command(app, "ON")
+    cid = cmd["command_id"]
+    db = SessionLocal()
+    row = db.query(CC).filter(CC.command_id == cid).first()
+    row.expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=5)
+    db.commit()
+    db.close()
+
+    res = client.get(f"/api/v1/devices/{did}/control/pending").json()
+    assert res["command"] is None
+    cmds = client.get("/api/v1/control-commands?limit=50").json()
+    mine = [c for c in cmds if c["command_id"] == cid]
+    assert mine and mine[0]["status"] == "EXPIRED"
+
+
+def test_device_control_status_endpoint():
+    app = _make_hw_appliance()
+    did = app["device_id"]
+    resp = client.get(f"/api/v1/devices/{did}/control/status").json()
+    assert resp["device_id"] == did
+    assert resp["hardware_control_available"] is True
+    assert any(a["id"] == app["id"] and a["channel"] == 1 for a in resp["appliances"])
+
+
+# ============================================================================
+# SCHEDULER -> REAL COMMAND QUEUE
+# ============================================================================
+
+def _force_due(schedule_id, due_at_naive_utc):
+    from app.database import SessionLocal
+    from app.models import Schedule as SchedModel
+    db = SessionLocal()
+    try:
+        row = db.query(SchedModel).filter(SchedModel.id == schedule_id).first()
+        row.next_execution_at = due_at_naive_utc
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_daily_schedule_creates_command_for_device():
+    from app.services.scheduler import SchedulerService
+    from app.database import SessionLocal
+    from datetime import datetime, timedelta, timezone
+    app = _make_hw_appliance()
+    s = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"], "on_time": "18:00", "off_time": "23:00", "schedule_type": "DAILY",
+    }).json()
+    # Force the ON event due right now.
+    due = datetime.now(timezone.utc).replace(tzinfo=None)
+    _force_due(s["id"], due)
+
+    db = SessionLocal()
+    try:
+        cmds = [c for c in SchedulerService(db).run_due() if c.appliance_id == app["id"]]
+        assert len(cmds) == 1
+        c = cmds[0]
+        assert c.device_id == app["device_id"]
+        assert c.channel == app["channel"]
+        assert c.status == "PENDING"
+        assert c.source == "SCHEDULE"
+    finally:
+        db.close()
+
+
+def test_weekly_schedule_respects_days():
+    from app.services.scheduler import SchedulerService
+    from app.database import SessionLocal
+    from app.models import Schedule as SchedModel
+    from app.utils.time import utcnow
+    from zoneinfo import ZoneInfo
+    app = _make_hw_appliance(name="Weekly Socket", channel=2)
+    s = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"], "on_time": "09:00", "off_time": "17:00",
+        "schedule_type": "WEEKLY", "days_of_week": [0, 4],
+    }).json()
+    assert s["days_of_week"] == [0, 4]
+    # Verify the next ON event lands on a Monday (0) or Friday (4) in IST.
+    db = SessionLocal()
+    try:
+        svc = SchedulerService(db)
+        row = db.query(SchedModel).filter(SchedModel.id == s["id"]).first()
+        next_on = svc.next_on_at(row, utcnow())
+        assert next_on is not None
+        ist = next_on.replace(tzinfo=ZoneInfo("UTC")).astimezone(ZoneInfo("Asia/Kolkata"))
+        assert ist.weekday() in (0, 4), f"next ON on unexpected weekday {ist.weekday()}"
+    finally:
+        db.close()
+
+
+def test_once_schedule_runs_once_only():
+    from app.services.scheduler import SchedulerService
+    from app.database import SessionLocal
+    from app.models import ControlCommand
+    from datetime import datetime, timezone
+    app = _make_hw_appliance(name="Once Socket", channel=3)
+    s = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"], "on_time": "08:00", "off_time": "09:00", "schedule_type": "ONCE",
+    }).json()
+    due = datetime.now(timezone.utc).replace(tzinfo=None)
+    _force_due(s["id"], due)
+    db = SessionLocal()
+    try:
+        svc = SchedulerService(db)
+        cmds1 = [c for c in svc.run_due() if c.appliance_id == app["id"]]
+        assert len(cmds1) == 1
+        assert cmds1[0].action == "ON"
+        # A second run must not duplicate the ONCE event.
+        before2 = db.query(ControlCommand).filter(ControlCommand.appliance_id == app["id"]).count()
+        svc.run_due()
+        after2 = db.query(ControlCommand).filter(ControlCommand.appliance_id == app["id"]).count()
+        assert before2 == after2
+    finally:
+        db.close()
+
+
+def test_overnight_schedule_off_fires_next_day():
+    from app.services.scheduler import SchedulerService
+    from app.database import SessionLocal
+    from datetime import datetime, timedelta
+    app = _make_hw_appliance(name="Overnight Socket", channel=4)
+    s = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"], "on_time": "23:00", "off_time": "06:00", "schedule_type": "DAILY",
+    }).json()
+    db = SessionLocal()
+    try:
+        svc = SchedulerService(db)
+        from app.models import Schedule as SchedModel
+        row = db.query(SchedModel).filter(SchedModel.id == s["id"]).first()
+        # Reference time 12:30 UTC = 18:00 IST (before the 23:00 IST ON).
+        ref = datetime(2026, 1, 1, 12, 30)
+        next_on = svc.next_on_at(row, ref)
+        next_off = svc.next_off_at(row, ref)
+        assert next_on is not None and next_off is not None
+        # ON 23:00 IST = 17:30 UTC on the reference day; OFF 06:00 IST = 00:30 UTC next day.
+        assert next_on.hour == 17 and next_on.minute == 30
+        assert next_off.hour == 0 and next_off.minute == 30
+        assert next_off > next_on
+    finally:
+        db.close()
+
+
+def test_overlapping_schedules_do_not_turn_off():
+    """Schedule A (18:00-22:00) ends while Schedule B (20:00-23:00) is still
+    active: A's OFF event must be suppressed (no OFF command created)."""
+    from app.services.scheduler import SchedulerService
+    from app.services.control_service import ControlService
+    from app.database import SessionLocal
+    from app.models import Schedule as SchedModel, ControlCommand
+    from datetime import datetime, timedelta
+
+    app = _make_hw_appliance(name="Overlap Socket", channel=5)
+    sA = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"], "on_time": "18:00", "off_time": "22:00", "schedule_type": "DAILY",
+    }).json()
+    sB = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"], "on_time": "20:00", "off_time": "23:00", "schedule_type": "DAILY",
+    }).json()
+
+    db = SessionLocal()
+    try:
+        # Scenario time: 2026-03-15 22:00:30 IST == 16:30:30 UTC.
+        now = datetime(2026, 3, 15, 16, 30, 30)
+        a = db.query(SchedModel).filter(SchedModel.id == sA["id"]).first()
+        b = db.query(SchedModel).filter(SchedModel.id == sB["id"]).first()
+        # A's ON already fired hours ago; only A's OFF (22:00 IST = 16:30 UTC) is pending.
+        a.next_execution_at = now - timedelta(seconds=30)  # due now
+        a.last_executed_at = now - timedelta(hours=3)
+        # B's ON fired at 20:00 IST = 14:30 UTC; its OFF (23:00 IST = 17:30 UTC) is future.
+        b.last_executed_at = now - timedelta(hours=1)
+        b.next_execution_at = datetime(2026, 3, 15, 17, 30)
+        db.commit()
+
+        svc = SchedulerService(db)
+        cmds = svc.run_due(now)
+        # A's OFF must be suppressed because B still requires ON.
+        assert cmds == [], "OFF command must be suppressed during an overlap"
+
+        # Advance A's cycle so the next run does not re-fire.
+        db.rollback()
+
+        # Sanity: without B, A's OFF WOULD fire.
+        b.next_execution_at = None
+        b.enabled = False
+        db.commit()
+        a2 = db.query(SchedModel).filter(SchedModel.id == sA["id"]).first()
+        a2.next_execution_at = now - timedelta(seconds=30)
+        a2.last_executed_at = now - timedelta(hours=3)
+        db.commit()
+        cmds2 = svc.run_due(now)
+        off_cmds = [c for c in cmds2 if c.action == "OFF"]
+        assert off_cmds, "A's OFF must fire when no other schedule requires ON"
+        for c in off_cmds:
+            assert c.device_id == app["device_id"]
+            assert c.status == "PENDING"
+    finally:
+        db.close()
+
+
+def test_disabled_and_deleted_schedules_create_no_commands():
+    from app.services.scheduler import SchedulerService
+    from app.database import SessionLocal
+    from datetime import datetime
+    app = _make_hw_appliance(name="NoCmd Socket", channel=6)
+    s_dis = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"], "on_time": "10:00", "off_time": "11:00", "schedule_type": "DAILY",
+    }).json()
+    s_del = client.post("/api/v1/schedules", json={
+        "appliance_id": app["id"], "on_time": "12:00", "off_time": "13:00", "schedule_type": "DAILY",
+    }).json()
+    client.post(f"/api/v1/schedules/{s_dis['id']}/disable")
+    client.delete(f"/api/v1/schedules/{s_del['id']}")
+    # Controlled reference in the past (before any other schedule's next event).
+    ref = datetime(2026, 1, 1, 0, 0)
+    _force_due(s_dis["id"], ref)
+
+    db = SessionLocal()
+    try:
+        cmds = SchedulerService(db).run_due(ref)
+        assert cmds == []
+    finally:
+        db.close()
+
+
+def test_scheduler_background_loop_starts_once():
+    import os
+    from app.services import scheduler_loop as sl
+    # The singleton is disabled under APP_TESTING=1; exercise the guard logic.
+    os.environ["APP_TESTING"] = "1"
+    assert sl.start_scheduler_loop() is False  # disabled in testing mode
+    sl.stop_scheduler_loop()
+
+    # Verify duplicate-start protection on a real loop instance.
+    loop = sl.SchedulerLoop(interval_seconds=5.0)
+    os.environ["APP_TESTING"] = "0"
+    try:
+        assert loop.start() is True
+        assert loop.start() is False  # duplicate start ignored
+        assert loop._started is True
+        assert loop._thread is not None and loop._thread.is_alive()
+    finally:
+        loop.stop()
+        os.environ["APP_TESTING"] = "1"
+
+
+def test_primary_device_remains_esp32_s3_01():
+    from app.utils.device_selection import select_device_id
+    from app.database import SessionLocal
+    db = SessionLocal()
+    try:
+        # ESP32-S3-01 must remain the resolved primary for voice/readings.
+        assert select_device_id(db, None) == "ESP32-S3-01"
+    finally:
+        db.close()
+
+
+def test_pzem_polling_still_works():
+    """The PZEM readings pipeline is untouched by control changes."""
+    from datetime import datetime, timezone
+    client.post("/api/v1/devices", json={"id": "pzem-regr", "name": "PZEM", "device_type": "PZEM-004T"})
+    r = client.post("/api/v1/devices/pzem-regr/readings", json={
+        "timestamp": datetime.now(timezone.utc).isoformat(),
+        "voltage": 230.0, "current": 0.5, "power": 115.0,
+        "energy": 0.25, "frequency": 50.0, "power_factor": 0.96, "data_source": "HARDWARE",
+    })
+    assert r.status_code == 201, r.text
+    assert r.json()["device_id"] == "pzem-regr"

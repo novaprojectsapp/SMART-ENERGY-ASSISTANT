@@ -14,7 +14,7 @@ from sqlalchemy.orm import Session
 from ..models import Appliance, Schedule, ControlCommand
 from ..schemas.schemas import ScheduleCreate, ControlCommandCreate
 from ..services.scheduler import SchedulerService
-from ..services.esp32_control import ESP32ControlService, HARDWARE_CONTROL_NOT_AVAILABLE
+from ..services.control_service import ControlService
 from ..utils.time import utcnow
 
 logger = logging.getLogger("smart_energy.ai.schedule")
@@ -147,12 +147,12 @@ class ScheduleActions:
         if created.off_time:
             message = (
                 f"Scheduled {app.name} to turn ON at {start_time} and OFF at {created.off_time} "
-                f"({repeat}). Physical appliance control is not connected yet."
+                f"({repeat}). The scheduler will send the command to the ESP32 at the set times."
             )
         else:
             message = (
                 f"Scheduled {app.name} to turn {action} at {start_time} ({repeat}). "
-                f"Physical appliance control is not connected yet."
+                f"The scheduler will send the command to the ESP32 at the set time."
             )
         return {
             "created": True,
@@ -260,24 +260,30 @@ class ScheduleActions:
             return err
         if not app.control_capable:
             return f"{app.name} is not control-capable, so it cannot be switched."
-        hardware = ESP32ControlService()
-        hw = hardware.turn_on(app) if action == "ON" else hardware.turn_off(app)
-        if hw.get("status") == HARDWARE_CONTROL_NOT_AVAILABLE:
-            status = "SIMULATED"
-            message = f"SIMULATED: {app.name} would turn {action}. Hardware control is not connected yet."
-        else:
-            status = "PENDING"
-            message = f"Control command created for {app.name} to turn {action}."
-        command = ControlCommand(
-            appliance_id=app.id,
-            action=action,
-            source="VOICE",
-            status=status,
-            message=message,
-        )
-        self.db.add(command)
+        control = ControlService(self.db)
+        try:
+            cmd = control.create_command(
+                appliance_id=app.id,
+                action=action,
+                source="VOICE",
+            )
+        except ValueError as exc:
+            return str(exc)
         self.db.commit()
-        return message
+        return (
+            f"Command sent to the ESP32 to turn {app.name} {action}. "
+            f"Waiting for confirmation."
+        )
+
+    # ------------------------------------------------------------------- state
+    def current_state(self, ref: str | None) -> str:
+        app, err = self.resolve_appliance(ref)
+        if err:
+            return err
+        state = app.last_confirmed_state or "UNKNOWN"
+        if state == "UNKNOWN":
+            return f"{app.name} has no confirmed state yet. Send an ON or OFF command to the ESP32 to sync it."
+        return f"{app.name} is currently {state} (confirmed by the ESP32)."
 
 
 def json_load(value):

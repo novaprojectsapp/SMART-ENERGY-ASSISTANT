@@ -30,12 +30,24 @@
 #define DEVICE_NAME "ESP32-S3 Smart Energy"
 
 // =============================================
+// Relay / Appliance Control Configuration
+// =============================================
+// The single-channel relay is wired to GPIO 40. It is ACTIVE LOW (module has
+// been manually tested): ON  = LOW, OFF = HIGH.
+#define RELAY_CHANNEL_1_PIN 40
+#define RELAY_ACTIVE_LOW true
+
+// Channel 1 on the backend maps to GPIO 40 through this firmware.
+#define CONTROL_CHANNEL_1_PIN RELAY_CHANNEL_1_PIN
+
+// =============================================
 // Timing Configuration
 // =============================================
 #define MEASUREMENT_INTERVAL_MS 2000
 #define PZEM_READ_INTERVAL_MS 1000
 #define WIFI_CHECK_INTERVAL_MS 10000
 #define DEVICE_REGISTER_RETRY_MS 30000
+#define CONTROL_POLL_INTERVAL_MS 1000
 
 // =============================================
 // Serial Monitor Configuration

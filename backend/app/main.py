@@ -8,6 +8,7 @@ from .config import settings
 from .database import init_db
 from .utils.logging import setup_logging
 from .paths import frontend_dir
+from .services.scheduler_loop import start_scheduler_loop, stop_scheduler_loop
 from .api.routers import (
     health,
     devices,
@@ -33,8 +34,11 @@ async def lifespan(app: FastAPI):
     logger.info("Smart Energy Assistant starting...")
     init_db()
     logger.info("Database initialized")
+    start_scheduler_loop()
     yield
     logger.info("Smart Energy Assistant shutting down")
+    stop_scheduler_loop()
+    logger.info("Background scheduler stopped")
 
 
 app = FastAPI(

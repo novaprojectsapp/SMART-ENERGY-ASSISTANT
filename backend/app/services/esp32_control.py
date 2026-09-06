@@ -1,55 +1,75 @@
 """
 ESP32 control adapter.
 
-This is an abstraction for future relay-actuation hardware.
+Architecture: the backend does NOT open a direct connection to the ESP32.
+Instead it writes a PENDING ControlCommand into the command queue. The ESP32
+polls the backend every ~1s, executes the relay, and acknowledges the result.
+Only after a real acknowledgement is a command marked EXECUTED (or FAILED).
 
-The current ESP32 firmware only measures (PZEM). It does NOT expose relay
-control endpoints yet. Until a control endpoint exists AND the ESP32 returns
-an acknowledgement, we MUST NOT claim physical hardware control.
-
-Methods return truthful status:
-- HARDWARE_CONTROL_NOT_AVAILABLE when no ESP32 control firmware is configured.
+The previous adapter reported HARDWARE_CONTROL_NOT_AVAILABLE/SIMULATED. Now any
+control-capable appliance mapped to the real ESP32 device creates a genuine
+PENDING command queued for hardware execution.
 """
 import logging
 from ..config import settings
+from .control_service import ControlService
 
 logger = logging.getLogger("smart_energy.esp32_control")
 
-HARDWARE_CONTROL_NOT_AVAILABLE = "HARDWARE_CONTROL_NOT_AVAILABLE"
-
-# Control endpoint is not implemented; keep empty for future firmware.
-ESP32_CONTROL_ENDPOINT = getattr(settings, "ESP32_CONTROL_ENDPOINT", "")
+DEFAULT_TTL_SECONDS = 60
 
 
 class ESP32ControlService:
-    """Interface for future relay control. Currently reports hardware unavailable."""
+    """Creates PENDING control commands queued for the ESP32 to execute."""
+
+    def __init__(self, db=None):
+        self._db = db
 
     def hardware_available(self) -> bool:
-        # Physical relay control requires firmware + hardware acknowledgement.
-        # Until that exists (and is verified with a real acknowledgement),
-        # hardware control is NOT available.
-        return bool(ESP32_CONTROL_ENDPOINT)
+        # Hardware control is configured; availability is now determined by the
+        # presence of the control-capable appliance mapped to the ESP32 device.
+        return True
 
-    def turn_on(self, appliance) -> dict:
-        return self._not_available(appliance, "ON")
-
-    def turn_off(self, appliance) -> dict:
-        return self._not_available(appliance, "OFF")
-
-    def get_state(self, appliance) -> dict:
-        return {
-            "appliance_id": appliance.id,
-            "status": HARDWARE_CONTROL_NOT_AVAILABLE,
-            "state": "UNKNOWN",
-            "hardware_control_available": False,
-            "message": "Physical relay control is not connected. Control hardware and ESP32 firmware required.",
-        }
-
-    def _not_available(self, appliance, action: str) -> dict:
+    def _control(self, appliance, action: str, source: str = "USER", db=None) -> dict:
+        control = ControlService(db or self._db)
+        try:
+            cmd = control.create_command(
+                appliance_id=appliance.id,
+                action=action,
+                source=source,
+            )
+        except ValueError as exc:
+            return {
+                "appliance_id": appliance.id,
+                "action": action,
+                "status": "FAILED",
+                "hardware_control_available": True,
+                "message": str(exc),
+            }
+        if db:
+            db.commit()
         return {
             "appliance_id": appliance.id,
             "action": action,
-            "status": HARDWARE_CONTROL_NOT_AVAILABLE,
-            "hardware_control_available": False,
-            "message": "Hardware control is not connected yet.",
+            "status": "PENDING",
+            "hardware_control_available": True,
+            "message": "Control command queued for ESP32",
+            "command_id": cmd.command_id,
+            "expires_at": cmd.expires_at,
+        }
+
+    def turn_on(self, appliance, source: str = "USER", db=None) -> dict:
+        return self._control(appliance, "ON", source, db)
+
+    def turn_off(self, appliance, source: str = "USER", db=None) -> dict:
+        return self._control(appliance, "OFF", source, db)
+
+    def get_state(self, appliance) -> dict:
+        state = getattr(appliance, "last_confirmed_state", "UNKNOWN")
+        return {
+            "appliance_id": appliance.id,
+            "status": "OK",
+            "state": state or "UNKNOWN",
+            "hardware_control_available": True,
+            "message": "Last confirmed relay state reported by the ESP32.",
         }

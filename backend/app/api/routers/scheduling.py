@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
 import json
@@ -8,14 +8,19 @@ from ...schemas.schemas import (
     ApplianceCreate,
     ApplianceUpdate,
     ApplianceResponse,
+    ApplianceControlResponse,
     ScheduleCreate,
     ScheduleUpdate,
     ScheduleResponse,
     ControlCommandCreate,
     ControlCommandResponse,
+    PendingCommandResponse,
+    CommandAckRequest,
+    CommandAckResponse,
 )
 from ...services.scheduler import SchedulerService
-from ...services.esp32_control import ESP32ControlService, HARDWARE_CONTROL_NOT_AVAILABLE
+from ...services.control_service import ControlService
+from ...services.esp32_control import ESP32ControlService
 from ...utils.time import utcnow
 
 router = APIRouter(prefix="/api/v1", tags=["scheduling"])
@@ -89,7 +94,7 @@ def delete_appliance(appliance_id: str, db: Session = Depends(get_db)):
 # ---------------------------------------------------------------------------
 # Control (manual)
 # ---------------------------------------------------------------------------
-@router.post("/appliances/{appliance_id}/control", response_model=ControlCommandResponse, status_code=201)
+@router.post("/appliances/{appliance_id}/control", status_code=201)
 def control_appliance(appliance_id: str, cmd_in: ControlCommandCreate, db: Session = Depends(get_db)):
     if cmd_in.appliance_id != appliance_id:
         raise HTTPException(status_code=400, detail="appliance_id mismatch")
@@ -99,38 +104,135 @@ def control_appliance(appliance_id: str, cmd_in: ControlCommandCreate, db: Sessi
     if not appliance.control_capable:
         raise HTTPException(status_code=400, detail="Appliance is not control capable")
 
-    hardware = ESP32ControlService()
-    hw = hardware.turn_on(appliance) if cmd_in.action == "ON" else hardware.turn_off(appliance)
+    hardware = ESP32ControlService(db=db)
+    hw = hardware.turn_on(appliance, source=cmd_in.source, db=db) if cmd_in.action == "ON" else hardware.turn_off(appliance, source=cmd_in.source, db=db)
 
-    if hw.get("status") == HARDWARE_CONTROL_NOT_AVAILABLE:
-        status = "SIMULATED"
-        message = "SIMULATED: %s would turn %s. Hardware control is not connected yet." % (
-            appliance.name, cmd_in.action,
-        )
-    else:
-        status = "PENDING"
-        message = "Control command created. Sending to hardware hardware control."
+    if hw.get("status") != "PENDING":
+        raise HTTPException(status_code=400, detail=hw.get("message", "Control command failed"))
 
-    command = ControlCommand(
-        appliance_id=appliance.id,
+    db.refresh(appliance)
+    return ApplianceControlResponse(
+        status="PENDING",
+        message="Control command queued for ESP32",
+        hardware_control_available=True,
+        command_id=hw.get("command_id"),
+        appliance=appliance.name,
         action=cmd_in.action,
         source=cmd_in.source,
-        status=status,
-        message=message,
+        expires_at=hw.get("expires_at"),
     )
-    db.add(command)
+
+
+# ---------------------------------------------------------------------------
+# ESP32 command polling + acknowledgement
+# ---------------------------------------------------------------------------
+@router.get("/devices/{device_id}/control/pending", response_model=PendingCommandResponse)
+def get_pending_control(device_id: str, db: Session = Depends(get_db)):
+    """Called by the ESP32 every ~1s. Returns the next PENDING command for this
+    device (never executed again after acknowledgement) or null."""
+    control = ControlService(db)
+    device = control.resolve_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
+
+    now = utcnow()
+    # Expire any stale PENDING commands for this device before dispatching.
+    stale = (
+        db.query(ControlCommand)
+        .filter(
+            ControlCommand.device_id == device_id,
+            ControlCommand.status == "PENDING",
+            ControlCommand.expires_at.isnot(None),
+            ControlCommand.expires_at <= now,
+        )
+        .all()
+    )
+    for c in stale:
+        c.status = "EXPIRED"
+        c.message = "Command expired before the ESP32 executed it."
+    if stale:
+        db.commit()
+
+    cmd = control.pending_command(device_id)
+    if not cmd:
+        db.commit()
+        return PendingCommandResponse(command=None)
+
+    control.dispatch_or_expire(cmd)
     db.commit()
-    db.refresh(command)
-    return ControlCommandResponse(
-        id=command.id,
-        appliance_id=command.appliance_id,
-        action=command.action,
-        source=command.source,
-        status=command.status,
-        message=command.message,
-        hardware_control_available=False,
-        created_at=command.created_at,
+
+    return PendingCommandResponse(
+        command={
+            "id": cmd.id,
+            "command_id": cmd.command_id,
+            "device_id": cmd.device_id,
+            "appliance_id": cmd.appliance_id,
+            "channel": cmd.channel,
+            "action": cmd.action,
+            "created_at": cmd.created_at,
+            "expires_at": cmd.expires_at,
+        }
     )
+
+
+@router.post("/devices/{device_id}/control/{command_id}/ack", response_model=CommandAckResponse)
+def ack_control(device_id: str, command_id: str, ack: CommandAckRequest, db: Session = Depends(get_db)):
+    control = ControlService(db)
+    device = control.resolve_device(device_id)
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
+
+    cmd = control.acknowledge(
+        command_id,
+        success=ack.success,
+        relay_state=ack.relay_state,
+        message=ack.message,
+    )
+    if not cmd:
+        raise HTTPException(status_code=404, detail="Command not found")
+
+    # Only the owning device may acknowledge its command.
+    if cmd.device_id and cmd.device_id != device_id:
+        raise HTTPException(status_code=403, detail="Command belongs to a different device")
+
+    db.commit()
+    return CommandAckResponse(
+        status=cmd.status,
+        command_id=cmd.command_id,
+        acknowledged=True,
+    )
+
+
+@router.get("/devices/{device_id}/control/status")
+def device_control_status(device_id: str, db: Session = Depends(get_db)):
+    device = db.query(Device).filter(Device.id == device_id).first()
+    if not device:
+        raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
+    app = (
+        db.query(Appliance)
+        .filter(Appliance.device_id == device_id, Appliance.control_capable == True)
+        .order_by(Appliance.created_at.asc())
+        .first()
+    )
+    return {
+        "device_id": device_id,
+        "hardware_control_available": True,
+        "device_online": device.last_seen is not None,
+        "last_seen": device.last_seen.isoformat() + "Z" if device.last_seen else None,
+        "appliances": [
+            {
+                "id": a.id,
+                "name": a.name,
+                "channel": a.channel,
+                "confirmed_state": a.last_confirmed_state or "UNKNOWN",
+                "last_control_at": a.last_control_at.isoformat() + "Z" if a.last_control_at else None,
+            }
+            for a in db.query(Appliance)
+            .filter(Appliance.device_id == device_id, Appliance.control_capable == True)
+            .order_by(Appliance.created_at.asc())
+            .all()
+        ],
+    }
 
 
 @router.get("/control-commands", response_model=list[ControlCommandResponse])
@@ -144,13 +246,20 @@ def list_control_commands(limit: int = 50, db: Session = Depends(get_db)):
     return [
         ControlCommandResponse(
             id=c.id,
+            command_id=c.command_id,
+            device_id=c.device_id,
             appliance_id=c.appliance_id,
+            channel=c.channel,
             action=c.action,
             source=c.source,
             status=c.status,
             message=c.message,
-            hardware_control_available=False,
+            hardware_control_available=True,
+            confirmed_relay_state=c.confirmed_relay_state or "UNKNOWN",
             created_at=c.created_at,
+            expires_at=c.expires_at,
+            acknowledged_at=c.acknowledged_at,
+            executed_at=c.executed_at,
         )
         for c in commands
     ]

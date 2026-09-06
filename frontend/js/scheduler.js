@@ -1,9 +1,89 @@
 let schedulerDevices = [];
 let schedulerAppliances = [];
 let schedulerSchedules = [];
+let schedulerInterval = null;
+let schedulerControlStatus = null;
+let schedulerPendingCmd = null;
 
 function initScheduler() {
     loadSchedulerData();
+    startSchedulerPolling();
+}
+
+// ----- page lifecycle -------------------------------------------------------
+function destroyScheduler() {
+    stopSchedulerPolling();
+}
+
+function startSchedulerPolling() {
+    stopSchedulerPolling();
+    schedulerInterval = setInterval(async () => {
+        await refreshSchedulerStatus();
+    }, 3000);
+}
+
+function stopSchedulerPolling() {
+    if (schedulerInterval) {
+        clearInterval(schedulerInterval);
+        schedulerInterval = null;
+    }
+}
+
+async function refreshSchedulerStatus() {
+    const container = document.getElementById('scheduler-page');
+    if (!container) return;
+    try {
+        const appliances = await api.getAppliances();
+        const devices = await api.getDevices();
+        const primary = devices.find(d => d.id === 'ESP32-S3-01') || devices[0];
+        let ctrl = null;
+        if (primary) {
+            try { ctrl = await api.getDeviceControlStatus(primary.id); } catch (e) { ctrl = null; }
+        }
+        schedulerAppliances = appliances;
+        schedulerDevices = devices;
+        schedulerControlStatus = ctrl;
+        updateSchedulerStatusIndicators(container);
+    } catch (e) {
+        // silent; keep last known status
+    }
+}
+
+function updateSchedulerStatusIndicators(container) {
+    const statusBadge = container.querySelector('#sched-esp32-badge');
+    const controlValue = container.querySelector('#sched-control-value');
+    const controlSub = container.querySelector('#sched-control-sub');
+    if (statusBadge && primaryDeviceObject()) {
+        const dev = primaryDeviceObject();
+        let cls = 'badge-off';
+        let text = 'Offline';
+        if (dev.status === 'CONNECTED') { cls = 'badge-on'; text = 'Online'; }
+        else if (dev.status === 'STALE') { cls = ''; text = 'Updating'; }
+        else if (dev.status && dev.status !== 'NO_DATA') { text = dev.status; }
+        else if (dev.last_seen) { text = 'No data'; }
+        statusBadge.textContent = text;
+        statusBadge.className = 'badge ' + cls;
+    }
+    if (controlValue && controlSub) {
+        const ctrl = schedulerControlStatus;
+        if (ctrl && ctrl.appliances && ctrl.appliances.length) {
+            const app = ctrl.appliances[0];
+            const state = app.confirmed_state || 'UNKNOWN';
+            controlValue.textContent = state;
+            const cls = state === 'ON' ? 'stat-card-value' : 'stat-card-value';
+            controlSub.textContent = ctrl.device_online ? 'ESP32 online · confirmed by hardware' : 'ESP32 offline · state may be stale';
+        } else if (ctrl) {
+            controlValue.textContent = 'NO RELAY';
+            controlSub.textContent = 'No control-capable appliance mapped';
+        } else {
+            controlValue.textContent = 'UNKNOWN';
+            controlSub.textContent = 'Device not reachable';
+        }
+    }
+}
+
+function primaryDeviceObject() {
+    return (schedulerDevices || []).find(d => d.id === 'ESP32-S3-01') || (schedulerDevices || [])[0] || null;
 }
 
 async function loadSchedulerData() {
@@ -21,6 +101,7 @@ async function loadSchedulerData() {
         schedulerAppliances = appliances;
         schedulerSchedules = schedules;
         renderScheduler(container, commands);
+        refreshSchedulerStatus();
     } catch (e) {
         showError(container, e.message);
     }
@@ -49,6 +130,17 @@ function formatTimeShort(iso) {
     }
 }
 
+function statusBadgeClass(status) {
+    switch (status) {
+        case 'EXECUTED': return 'badge-on';
+        case 'PENDING':
+        case 'DISPATCHED': return 'badge-warn';
+        case 'FAILED':
+        case 'EXPIRED': return 'badge-off';
+        default: return 'badge-off';
+    }
+}
+
 function renderScheduler(container, commands) {
     const controllable = schedulerAppliances.filter(a => a.control_capable);
 
@@ -59,15 +151,19 @@ function renderScheduler(container, commands) {
         appCards = '<div class="appliance-grid">';
         schedulerAppliances.forEach(a => {
             const type = (a.type || 'OTHER').toLowerCase();
+            const confirmed = a.last_confirmed_state || 'UNKNOWN';
+            const confirmedCls = confirmed === 'ON' ? 'badge-on' : (confirmed === 'OFF' ? 'badge-off' : 'badge-warn');
             appCards += `
                 <div class="appliance-card">
                     <div class="name">${a.name} <span class="appl-ch">#${a.channel}</span></div>
                     <div class="type-tag">${a.type}${a.control_capable ? '' : ' · NO CONTROL'}</div>
+                    <div class="state-line">ESP32 state: <span class="badge ${confirmedCls}">${confirmed}</span></div>
                     <div class="controls">
                         <button class="btn btn-secondary btn-sm" ${a.control_capable ? '' : 'disabled'} onclick="manualControl('${a.id}','ON')">ON</button>
                         <button class="btn btn-secondary btn-sm" ${a.control_capable ? '' : 'disabled'} onclick="manualControl('${a.id}','OFF')">OFF</button>
                         <button class="btn btn-danger btn-sm" onclick="removeAppliance('${a.id}','${esc(a.name)}')">✕</button>
                     </div>
+                    <div class="control-feedback" id="ctrl-${a.id}"></div>
                 </div>`;
         });
         appCards += '</div>';
@@ -109,13 +205,20 @@ function renderScheduler(container, commands) {
 
     let history = '';
     if (commands && commands.length) {
+        const footNote = schedulerControlStatus && schedulerControlStatus.hardware_control_available
+            ? 'Commands are queued for the ESP32 and only marked EXECUTED after hardware acknowledgement.'
+            : 'Waiting for ESP32 acknowledgement.';
         history = '<div class="section-card"><div class="section-card-header"><span class="section-card-title">Control Command History</span><span class="section-badge no-data">RECENT</span></div><div style="overflow-x:auto;"><table class="slab-table"><thead><tr><th>Time</th><th>Action</th><th>Source</th><th>Status</th><th>Message</th></tr></thead><tbody>';
         commands.forEach(c => {
             const app = schedulerAppliances.find(a => a.id === c.appliance_id);
-            history += `<tr><td>${formatDate(c.created_at)}</td><td>${c.action}</td><td>${c.source}</td><td><span class="badge badge-off">${c.status}</span></td><td>${c.message}</td></tr>`;
+            history += `<tr><td>${formatDate(c.created_at)}</td><td>${c.action}</td><td>${c.source||'USER'}</td><td><span class="badge ${statusBadgeClass(c.status)}">${c.status}</span></td><td>${esc(c.message || '')}</td></tr>`;
         });
-        history += '</tbody></table></div><div class="sched-footnote">Hardware control is not connected yet — commands are recorded as SIMULATED/PENDING until ESP32 relay control firmware is integrated.</div></div>';
+        history += '</tbody></table></div><div class="sched-footnote">' + footNote + '</div></div>';
     }
+
+    const primary = primaryDeviceObject();
+    const espBadge = primary ? (primary.status === 'CONNECTED' ? 'badge-on' : (primary.status === 'STALE' ? '' : 'badge-off')) : 'badge-off';
+    const espText = primary ? (primary.status === 'CONNECTED' ? 'ONLINE' : (primary.status === 'STALE' ? 'UPDATING' : (primary.status || 'NO DATA'))) : 'NO DEVICE';
 
     container.innerHTML = `
         <div class="dashboard-grid" style="margin-bottom:20px;">
@@ -130,9 +233,9 @@ function renderScheduler(container, commands) {
                 <div class="stat-card-sub">${schedulerSchedules.length} total</div>
             </div>
             <div class="stat-card">
-                <div class="stat-card-header"><span class="stat-card-label">Control Status</span><div class="stat-card-icon voltage">⚙</div></div>
-                <div class="stat-card-value" style="font-size:14px;">PENDING HARDWARE</div>
-                <div class="stat-card-sub">Relay control not connected</div>
+                <div class="stat-card-header"><span class="stat-card-label">ESP32 Status</span><div class="stat-card-icon voltage">📶</div></div>
+                <div class="stat-card-value" style="font-size:14px;"><span class="badge ${espBadge}" id="sched-esp32-badge">${espText}</span></div>
+                <div class="stat-card-sub">${primary ? primary.id : 'No device'}</div>
             </div>
         </div>
 
@@ -155,10 +258,12 @@ function renderScheduler(container, commands) {
         <div id="scheduler-forms"></div>
         ${history}
     `;
+    updateSchedulerStatusIndicators(container);
 }
 
 function esc(s) {
-    return (s || '').replace(/[\\"']/g, '\\$&');
+    if (s == null) return '';
+    return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 }
 
 function showAddAppliance() {
@@ -265,10 +370,47 @@ function closeForm() {
 }
 
 async function manualControl(applianceId, action) {
+    const feedback = document.getElementById(`ctrl-${applianceId}`);
+    if (feedback) feedback.innerHTML = '<div class="control-feedback pending">Sending command...</div>';
     try {
         const result = await api.controlAppliance(applianceId, action, 'USER');
-        alert(result.message || 'Control command recorded.');
-    } catch (err) { alert('Error: ' + err.message); }
+        const cmdId = result.command_id || '';
+        if (feedback) {
+            feedback.innerHTML = `<div class="control-feedback pending">Waiting for ESP32... (${cmdId})</div>`;
+        }
+        // Poll for acknowledgement until it resolves or times out.
+        const outcome = await waitForCommandResult(cmdId, 20000);
+        if (feedback) {
+            if (outcome && outcome.status === 'EXECUTED') {
+                feedback.innerHTML = `<div class="control-feedback ok">ESP32 confirmed ${action === 'ON' ? 'ON' : 'OFF'}</div>`;
+            } else if (outcome && (outcome.status === 'FAILED' || outcome.status === 'EXPIRED')) {
+                feedback.innerHTML = `<div class="control-feedback err">Command ${outcome.status}: ${outcome.message || 'relay execution failed'}</div>`;
+            } else {
+                feedback.innerHTML = `<div class="control-feedback pending">Command pending / timed out</div>`;
+            }
+        }
+        refreshSchedulerStatus();
+        await new Promise(r => setTimeout(r, 200));
+        loadSchedulerData();
+    } catch (err) {
+        if (feedback) feedback.innerHTML = `<div class="control-feedback err">Error: ${err.message}</div>`;
+    }
+}
+
+async function waitForCommandResult(cmdId, timeoutMs) {
+    if (!cmdId) return null;
+    const deadline = Date.now() + timeoutMs;
+    while (Date.now() < deadline) {
+        try {
+            const commands = await api.getControlCommands(50);
+            const found = commands.find(c => c.command_id === cmdId || c.id === cmdId);
+            if (found && (found.status === 'EXECUTED' || found.status === 'FAILED' || found.status === 'EXPIRED')) {
+                return found;
+            }
+        } catch (e) { /* ignore */ }
+        await new Promise(r => setTimeout(r, 1000));
+    }
+    return null;
 }
 
 async function removeAppliance(id, name) {
@@ -352,4 +494,3 @@ function toggleDaysEdit(value) {
     const el = document.getElementById('edit-weekly-days');
     if (el) el.style.display = value === 'WEEKLY' ? 'block' : 'none';
 }
-

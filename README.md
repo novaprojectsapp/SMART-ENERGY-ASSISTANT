@@ -163,12 +163,15 @@ smart-energy-assistant/
 | `/api/v1/settings` | GET | Settings |
 | `/api/v1/appliances` | GET/POST | List/register appliances |
 | `/api/v1/appliances/{id}` | GET/PUT/DELETE | Get/update/delete appliance |
-| `/api/v1/appliances/{id}/control` | POST | Manual ON/OFF control |
-| `/api/v1/control-commands` | GET | Control command history |
+| `/api/v1/appliances/{id}/control` | POST | Manual ON/OFF (queues a PENDING ESP32 command) |
+| `/api/v1/control-commands` | GET | Control command history (full lifecycle) |
+| `/api/v1/devices/{id}/control/pending` | GET | ESP32 polling endpoint (next PENDING command) |
+| `/api/v1/devices/{id}/control/{cmd}/ack` | POST | ESP32 acknowledgement (→ EXECUTED/FAILED) |
+| `/api/v1/devices/{id}/control/status` | GET | Live device control status |
 | `/api/v1/schedules` | GET/POST | List/create schedules |
 | `/api/v1/schedules/{id}` | GET/PUT/DELETE | Get/update/delete schedule |
 | `/api/v1/schedules/{id}/enable` `/disable` | POST | Enable/disable schedule |
-| `/api/v1/scheduler/run` | POST | Run scheduler (safe, no GPIO) |
+| `/api/v1/scheduler/run` | POST | Run scheduler manually (safe, no GPIO) |
 
 ## ESP32 Connection
 
@@ -176,6 +179,10 @@ smart-energy-assistant/
 2. Configure ESP32 to send POST requests to `http://<LAPTOP_IP>:8000/api/v1/devices/{device_id}/readings`
 3. Ensure firewall allows port 8000
 4. Both devices must be on same Wi-Fi network
+
+The ESP32-S3-01 also **polls** `http://192.168.4.2:8000/api/v1/devices/ESP32-S3-01/control/pending`
+about every second and acknowledges executed commands, so the relay on GPIO 40 is
+driven reliably with honest confirmation back to the dashboard.
 
 ## Billing Engine
 
@@ -196,14 +203,15 @@ Register appliances and build recurring **ON/OFF time-pair** schedules
 (ONCE / DAILY / WEEKLY) — a single schedule holds an ON time and an OFF time
 (e.g. ON 18:00 → OFF 23:00, including overnight pairs like ON 23:00 → OFF 06:00).
 Create them from the dashboard or by voice ("turn on bulb 1 at 6 PM and turn it off
-at 11 PM every day"), run the scheduler, and record control history. See `docs/scheduling.md`.
+at 11 PM every day"), and the scheduler runs automatically. See `docs/scheduling.md`.
 
-> **Honesty note:** Scheduling software is ready, but **physical appliance control
-> is pending hardware**. Until ESP32 relay control firmware is integrated, all
-> ON/OFF commands are recorded as **SIMULATED / PENDING** with the message
-> *"Hardware control is not connected yet."* The system never claims to have
-> physically switched a device. Production data and PZEM measurement are
-> unaffected.
+> **Relay control is real and honest.** ON/OFF commands are queued as **PENDING**
+> and executed by the **ESP32-S3-01** firmware on **GPIO 40 (active-low relay)**:
+> the firmware polls the backend every second, drives the relay, and ACKs the
+> result. A command is only marked **EXECUTED** after a real ESP32
+> acknowledgement — the system never claims to have physically switched a device
+> without an ACK. Commands expire after 60 seconds if the ESP32 never polls them.
+> PZEM measurement, billing, analytics, and voice are unaffected.
 
 ## Safety Rules
 

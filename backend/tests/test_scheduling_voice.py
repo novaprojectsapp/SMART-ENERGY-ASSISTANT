@@ -94,15 +94,17 @@ def test_voice_clarify_missing_on_time():
     assert not any(s["off_time"] == "23:00" and s["on_time"] is None for s in scheds)
 
 
-def test_voice_manual_on_honest_simulated():
+def test_voice_manual_on_creates_pending():
     did = _device("vfan-dev")
     _appliance("Fan 3", "FAN", 3, did)
     d = _voice("turn on fan 3", did)
     assert d["intent"] == "MANUAL_APPLIANCE_ON"
-    assert "Hardware control is not connected yet" in d["response"]
-    # Control command recorded as SIMULATED
+    # Voice must not claim success before hardware acknowledgement.
+    assert "Waiting for confirmation" in d["response"]
+    assert "Command sent to the ESP32" in d["response"]
+    # Control command recorded as PENDING for the hardware queue.
     cmds = client.get("/api/v1/control-commands").json()
-    assert any(c["source"] == "VOICE" and c["status"] == "SIMULATED" for c in cmds)
+    assert any(c["source"] == "VOICE" and c["status"] == "PENDING" for c in cmds)
 
 
 def test_voice_list_schedules_and_appliances():
