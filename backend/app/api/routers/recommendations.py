@@ -5,6 +5,7 @@ from ...models import Device, EnergyReading
 from ...billing.engine import load_tariff, calculate_billing
 from ...ai.data_access import get_energy_kwh
 from ...utils.time import utcnow
+from ...utils.device_selection import select_device_id
 from datetime import timedelta
 
 router = APIRouter(prefix="/api/v1/recommendations", tags=["recommendations"])
@@ -12,17 +13,17 @@ router = APIRouter(prefix="/api/v1/recommendations", tags=["recommendations"])
 
 @router.get("")
 def get_recommendations(device_id: str | None = None, db: Session = Depends(get_db)):
+    device_id = select_device_id(db, device_id)
     now = utcnow()
     week_start = now - timedelta(days=7)
 
     recent_kwh = get_energy_kwh(db, week_start, now, device_id)
     avg_daily = recent_kwh / 7.0 if recent_kwh > 0 else 0
 
-    latest = (
-        db.query(EnergyReading)
-        .order_by(EnergyReading.timestamp.desc())
-        .first()
-    )
+    latest_query = db.query(EnergyReading)
+    if device_id:
+        latest_query = latest_query.filter(EnergyReading.device_id == device_id)
+    latest = latest_query.order_by(EnergyReading.timestamp.desc()).first()
 
     recommendations = []
 
@@ -33,9 +34,13 @@ def get_recommendations(device_id: str | None = None, db: Session = Depends(get_
             "message": "Connect your device to receive personalized recommendations.",
         }
 
+    peak_query = db.query(EnergyReading).filter(
+        EnergyReading.timestamp >= now - timedelta(days=7),
+    )
+    if device_id:
+        peak_query = peak_query.filter(EnergyReading.device_id == device_id)
     peak_readings = (
-        db.query(EnergyReading)
-        .filter(EnergyReading.timestamp >= now - timedelta(days=7))
+        peak_query
         .order_by(EnergyReading.power.desc())
         .limit(5)
         .all()

@@ -4,6 +4,7 @@ from datetime import datetime, timedelta, timezone
 from ...database import get_db
 from ...models import EnergyReading
 from ...billing.engine import load_tariff, calculate_billing
+from ...utils.device_selection import select_device_id
 import logging
 
 logger = logging.getLogger("smart_energy.api.analytics")
@@ -28,6 +29,7 @@ def _calc_energy_delta(readings):
 
 @router.get("/summary")
 def get_analytics_summary(device_id: str | None = None, db: Session = Depends(get_db)):
+    device_id = select_device_id(db, device_id)
     now = datetime.now(timezone.utc)
 
     today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
@@ -91,6 +93,7 @@ def get_analytics_summary(device_id: str | None = None, db: Session = Depends(ge
 
 @router.get("/hourly")
 def get_hourly_data(days: int = 1, device_id: str | None = None, db: Session = Depends(get_db)):
+    device_id = select_device_id(db, device_id)
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=min(days, 30))
     readings = _get_readings_range(db, start, now, device_id)
@@ -119,6 +122,7 @@ def get_hourly_data(days: int = 1, device_id: str | None = None, db: Session = D
 
 @router.get("/daily")
 def get_daily_data(days: int = 7, device_id: str | None = None, db: Session = Depends(get_db)):
+    device_id = select_device_id(db, device_id)
     now = datetime.now(timezone.utc)
     daily = []
 
@@ -144,6 +148,7 @@ def get_daily_data(days: int = 7, device_id: str | None = None, db: Session = De
 
 @router.get("/anomalies")
 def get_anomalies(device_id: str | None = None, db: Session = Depends(get_db)):
+    device_id = select_device_id(db, device_id)
     now = datetime.now(timezone.utc)
     seven_days_ago = now - timedelta(days=7)
     readings = _get_readings_range(db, seven_days_ago, now, device_id)
@@ -185,6 +190,7 @@ def get_anomalies(device_id: str | None = None, db: Session = Depends(get_db)):
 
 @router.get("/patterns")
 def get_patterns(device_id: str | None = None, db: Session = Depends(get_db)):
+    device_id = select_device_id(db, device_id)
     now = datetime.now(timezone.utc)
     week_ago = now - timedelta(days=7)
     readings = _get_readings_range(db, week_ago, now, device_id)

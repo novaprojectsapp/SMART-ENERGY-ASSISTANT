@@ -5,6 +5,7 @@ from ...models import EnergyReading, BillingRecord
 from ...billing.engine import load_tariff, calculate_billing
 from ...ai.data_access import get_energy_kwh
 from ...utils.time import utcnow
+from ...utils.device_selection import select_device_id
 from datetime import timedelta
 import json
 
@@ -13,6 +14,7 @@ router = APIRouter(prefix="/api/v1/reports", tags=["reports"])
 
 @router.get("/energy-summary")
 def energy_summary(days: int = 30, device_id: str | None = None, db: Session = Depends(get_db)):
+    device_id = select_device_id(db, device_id)
     now = utcnow()
     start = now - timedelta(days=min(days, 365))
 

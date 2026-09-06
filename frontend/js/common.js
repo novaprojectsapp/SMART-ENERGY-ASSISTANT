@@ -60,6 +60,102 @@ function showLoading(container) {
     container.innerHTML = '<div style="text-align:center;padding:40px;"><div class="loading-spinner"></div></div>';
 }
 
+const PRIMARY_DEVICE_ID = 'ESP32-S3-01';
+
+function getPrimaryDevice(devices, latest) {
+    const list = Array.isArray(devices) ? devices : [];
+    if (list.length === 0) return null;
+
+    // Same priority as the backend /readings/latest endpoint:
+    // the first entry of `latest` is the live primary reading.
+    if (latest && latest[0]) {
+        const viaLive = list.find(d => d.id === latest[0].device_id);
+        if (viaLive) return viaLive;
+    }
+
+    const byId = list.find(d => d.id === PRIMARY_DEVICE_ID && d.is_active);
+    if (byId) return byId;
+
+    const hardwareIds = new Set(
+        (latest || [])
+            .filter(r => r.data_source === 'HARDWARE')
+            .map(r => r.device_id)
+    );
+    const byHardware = list.find(d => hardwareIds.has(d.id));
+    if (byHardware) return byHardware;
+
+    const byStatus = list.find(d => d.status && d.status !== 'NO_DATA');
+    if (byStatus) return byStatus;
+
+    return list[0];
+}
+
+function updateDeviceStatus(devices, latest) {
+    const label = document.getElementById('device-status-label');
+    const dot = document.getElementById('status-dot');
+    if (!label || !dot) return;
+
+    const device = getPrimaryDevice(devices, latest);
+    if (!device) {
+        label.textContent = 'No device';
+        dot.className = 'status-dot';
+        setWifiIndicator('OFFLINE', 'No Device');
+        return;
+    }
+
+    const live = (latest || []).find(r => r.device_id === device.id);
+    let fresh;
+    if (live) {
+        fresh = freshnessFromDate(live.timestamp);
+    } else if (device.status && device.status !== 'NO_DATA') {
+        fresh = device.status;
+    } else if (device.last_seen) {
+        fresh = freshnessFromDate(device.last_seen);
+    } else {
+        fresh = 'NO_DATA';
+    }
+
+    if (fresh === 'CONNECTED') {
+        label.textContent = `${device.name} - Online`;
+        dot.className = 'status-dot online';
+        setWifiIndicator('ONLINE', 'Wi-Fi Connected');
+    } else if (fresh === 'STALE') {
+        label.textContent = `${device.name} - Updating`;
+        dot.className = 'status-dot';
+        const lastSeen = device.last_seen ? ` · Last seen ${timeAgo(device.last_seen)}` : '';
+        setWifiIndicator('CONNECTING', `ESP32 Updating${lastSeen}`);
+    } else if (fresh === 'OFFLINE') {
+        label.textContent = `${device.name} - Offline`;
+        dot.className = 'status-dot';
+        const lastSeen = device.last_seen ? ` · Last seen ${timeAgo(device.last_seen)}` : '';
+        setWifiIndicator('OFFLINE', `ESP32 Offline${lastSeen}`);
+    } else {
+        label.textContent = `${device.name} - No Data`;
+        dot.className = 'status-dot';
+        setWifiIndicator('CONNECTING', 'Connecting...');
+    }
+}
+
+function setWifiIndicator(state, text) {
+    const el = document.getElementById('wifi-indicator');
+    const label = document.getElementById('wifi-status-label');
+    if (!el || !label) return;
+    label.textContent = text;
+    el.setAttribute('data-state', state.toLowerCase());
+}
+
+async function refreshHeaderStatus() {
+    try {
+        const [devices, latest] = await Promise.all([
+            api.getDevices(),
+            api.getLatestReadings(),
+        ]);
+        updateDeviceStatus(devices, latest);
+    } catch (e) {
+        console.error('Header status refresh failed:', e);
+    }
+}
+
 function setStatusBadge(container, source) {
     const cls = {
         'MEASURED': 'measured',

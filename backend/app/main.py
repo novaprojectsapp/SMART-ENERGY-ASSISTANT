@@ -5,6 +5,7 @@ from fastapi.responses import JSONResponse
 from pathlib import Path
 from contextlib import asynccontextmanager
 
+from .config import settings
 from .database import init_db
 from .utils.logging import setup_logging
 from .api.routers import (
@@ -69,9 +70,14 @@ app.include_router(scheduling.router)
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception):
     logger.error("Unhandled exception: %s", exc, exc_info=True)
+    if getattr(settings, "APP_ENV", "development") == "development":
+        return JSONResponse(
+            status_code=500,
+            content={"error": "Internal server error", "detail": str(exc), "code": "INTERNAL_ERROR"},
+        )
     return JSONResponse(
         status_code=500,
-        content={"error": "Internal server error", "detail": str(exc), "code": "INTERNAL_ERROR"},
+        content={"error": "Internal server error", "code": "INTERNAL_ERROR"},
     )
 
 

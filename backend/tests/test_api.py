@@ -976,3 +976,90 @@ def test_device_status_freshness_thresholds():
     st = client.get("/api/v1/devices/fresh-thresh-dev/status").json()
     assert st["status"] == "OFFLINE"
     db.close()
+
+
+# ============================================================================
+# REGRESSION: Billing no longer references the undefined projectly_monthly
+# ============================================================================
+def test_billing_predict_does_not_crash_projection():
+    """The /billing/predict endpoint must project monthly charges without the
+    old `projectly_monthly` NameError (root-cause regression test)."""
+    client.post("/api/v1/devices", json={
+        "id": "billing-regr-dev", "name": "Billing Regr", "device_type": "PZEM-004T",
+    })
+    payload = {"voltage": 230.0, "current": 0.5, "power": 115.0,
+               "energy": 100.0, "frequency": 50.0, "power_factor": 0.95}
+    assert client.post("/api/v1/devices/billing-regr-dev/readings", json=payload).status_code == 201
+    payload2 = {**payload, "energy": 105.0}
+    assert client.post("/api/v1/devices/billing-regr-dev/readings", json=payload2).status_code == 201
+
+    res = client.get("/api/v1/billing/predict?days=30&device_id=billing-regr-dev")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["status"] == "OK"
+    assert data["monthly_equivalent"]["projected_kwh"] > 0
+    assert data["monthly_equivalent"]["energy_charge"] >= 0
+    assert data["device_id"] == "billing-regr-dev"
+
+
+def test_billing_predict_defaults_to_primary_hardware():
+    """Calling /billing/predict without a device_id must resolve to the primary
+    ESP32 hardware device, never to an unregistered/empty selection."""
+    # ESP32-S3-01 is registered + has a HARDWARE reading from the priority test.
+    res = client.get("/api/v1/billing/predict?days=30")
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data.get("device_id") == "ESP32-S3-01"
+
+
+# ============================================================================
+# REGRESSION: central primary-device selection (backend)
+# ============================================================================
+def test_device_selection_prefers_primary_hardware():
+    from app.database import SessionLocal
+    from app.utils.device_selection import select_device_id
+    from app.models import Device
+    db = SessionLocal()
+    try:
+        assert select_device_id(db, None) == "ESP32-S3-01", (
+            "PRIMARY_DEVICE_ID must win over any test device"
+        )
+        # Explicit device_id is honored as-is.
+        assert select_device_id(db, "test-device-001") == "test-device-001"
+        # Deactivating the primary should fall back to a HARDWARE device (not None).
+        d = db.query(Device).filter(Device.id == "ESP32-S3-01").first()
+        d.is_active = False
+        db.commit()
+        resolved = select_device_id(db, None)
+        assert resolved is not None and resolved in ("test-device-001", "billing-regr-dev", "esp32-pzem-002")
+        d.is_active = True
+        db.commit()
+    finally:
+        db.close()
+
+
+def test_voice_uses_primary_hardware_readings():
+    """Voice 'current power' must use ESP32-S3-01 data, not a newer test device."""
+    client.post("/api/v1/devices", json={
+        "id": "voice-probe", "name": "Voice Probe Sim", "device_type": "PZEM-004T",
+    })
+    probe = {"voltage": 0.0, "current": 0.0, "power": 777.0, "energy": 9.0,
+             "frequency": 0.0, "power_factor": 0.0, "data_source": "HARDWARE"}
+    assert client.post("/api/v1/devices/voice-probe/readings", json=probe).status_code == 201
+
+    res = client.post("/api/v1/voice/query", json={"text": "What is my current power?"})
+    assert res.status_code == 200, res.text
+    data = res.json()
+    assert data["intent"] == "CURRENT_POWER"
+    assert "241.00" in data["response"], data["response"]
+    assert "777" not in data["response"], "Must not answer from the test/probe device"
+
+
+def test_voice_query_accepts_basic_text():
+    """A normal typed voice/query request returns intent + a response (no 500)."""
+    for text in ["What is my current voltage?", "help me with my bill", "hello"]:
+        res = client.post("/api/v1/voice/query", json={"text": text})
+        assert res.status_code == 200, res.text
+        body = res.json()
+        assert body["intent"]
+        assert isinstance(body["response"], str) and len(body["response"]) > 0

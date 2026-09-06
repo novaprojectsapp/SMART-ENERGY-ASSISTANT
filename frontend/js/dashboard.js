@@ -46,57 +46,6 @@ async function loadDashboard() {
     }
 }
 
-function updateDeviceStatus(devices, latest) {
-    const label = document.getElementById('device-status-label');
-    const dot = document.getElementById('status-dot');
-    if (!label || !dot) return;
-
-    const live = latest && latest[0];
-    const device = live ? devices.find(d => d.id === live.device_id) : null;
-
-    if (devices.length === 0) {
-        label.textContent = 'No device';
-        dot.className = 'status-dot';
-        setWifiIndicator('OFFLINE', 'No Device');
-        return;
-    }
-    if (!device) {
-        label.textContent = (live ? live.device_id : devices[0].name) + ' - No Status';
-        dot.className = 'status-dot';
-        setWifiIndicator('OFFLINE', 'Device Not Registered');
-        return;
-    }
-
-    const fresh = live ? freshnessFromDate(live.timestamp) : (device.status || 'NO_DATA');
-    if (fresh === 'CONNECTED') {
-        label.textContent = `${device.name} - Online`;
-        dot.className = 'status-dot online';
-        setWifiIndicator('ONLINE', 'Wi-Fi Connected');
-    } else if (fresh === 'STALE') {
-        label.textContent = `${device.name} - Updating`;
-        dot.className = 'status-dot';
-        const lastSeen = device.last_seen ? ` · Last seen ${timeAgo(device.last_seen)}` : '';
-        setWifiIndicator('CONNECTING', `ESP32 Updating${lastSeen}`);
-    } else if (fresh === 'OFFLINE') {
-        label.textContent = `${device.name} - Offline`;
-        dot.className = 'status-dot';
-        const lastSeen = device.last_seen ? ` · Last seen ${timeAgo(device.last_seen)}` : '';
-        setWifiIndicator('OFFLINE', `ESP32 Offline${lastSeen}`);
-    } else {
-        label.textContent = `${device.name} - No Data`;
-        dot.className = 'status-dot';
-        setWifiIndicator('CONNECTING', 'Connecting...');
-    }
-}
-
-function setWifiIndicator(state, text) {
-    const el = document.getElementById('wifi-indicator');
-    const label = document.getElementById('wifi-status-label');
-    if (!el || !label) return;
-    label.textContent = text;
-    el.setAttribute('data-state', state.toLowerCase());
-}
-
 function connectionState(latest) {
     if (!latest || latest.length === 0) return 'NO_DEVICE';
     return freshnessFromDate(latest[0].timestamp);
@@ -105,7 +54,7 @@ function connectionState(latest) {
 function renderConnectionCard(container, devices, latest, health) {
     if (!container) return;
     const live = latest && latest[0];
-    const device = live ? (devices.find(d => d.id === live.device_id) || devices[0]) : (devices && devices[0]);
+    const device = getPrimaryDevice(devices, latest);
     const hasReading = !!live;
     const dataSource = live && live.data_source ? live.data_source : (hasReading ? 'HARDWARE' : '—');
     const state = connectionState(latest);

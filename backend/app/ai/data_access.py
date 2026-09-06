@@ -1,9 +1,15 @@
 from sqlalchemy.orm import Session
 from ..models import EnergyReading, Device
+from ..utils.device_selection import select_device_id
 from datetime import datetime, timedelta, timezone
 
 
+def _resolve(db: Session, device_id: str | None) -> str | None:
+    return select_device_id(db, device_id)
+
+
 def get_latest_reading(db: Session, device_id: str | None = None) -> EnergyReading | None:
+    device_id = _resolve(db, device_id)
     query = db.query(EnergyReading)
     if device_id:
         query = query.filter(EnergyReading.device_id == device_id)
@@ -13,6 +19,7 @@ def get_latest_reading(db: Session, device_id: str | None = None) -> EnergyReadi
 def get_today_readings(db: Session, device_id: str | None = None) -> list[EnergyReading]:
     now = datetime.now(timezone.utc)
     start = now.replace(hour=0, minute=0, second=0, microsecond=0)
+    device_id = _resolve(db, device_id)
     query = db.query(EnergyReading).filter(
         EnergyReading.timestamp >= start,
         EnergyReading.timestamp <= now,
@@ -25,6 +32,7 @@ def get_today_readings(db: Session, device_id: str | None = None) -> list[Energy
 def get_recent_readings(db: Session, days: int = 7, device_id: str | None = None) -> list[EnergyReading]:
     now = datetime.now(timezone.utc)
     start = now - timedelta(days=days)
+    device_id = _resolve(db, device_id)
     query = db.query(EnergyReading).filter(
         EnergyReading.timestamp >= start,
         EnergyReading.timestamp <= now,
@@ -41,6 +49,7 @@ def calc_daily_energy(readings: list[EnergyReading]) -> float:
 
 
 def get_energy_kwh(db: Session, start: datetime, end: datetime, device_id: str | None = None) -> float:
+    device_id = _resolve(db, device_id)
     query = db.query(EnergyReading).filter(
         EnergyReading.timestamp >= start,
         EnergyReading.timestamp <= end,

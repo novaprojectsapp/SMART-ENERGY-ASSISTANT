@@ -4,6 +4,7 @@ from ...database import get_db
 from ...models import EnergyReading
 from ...billing.engine import load_tariff, calculate_billing
 from ...utils.time import utcnow
+from ...utils.device_selection import select_device_id
 from datetime import timedelta
 
 router = APIRouter(prefix="/api/v1/ai", tags=["ai-insights"])
@@ -11,6 +12,7 @@ router = APIRouter(prefix="/api/v1/ai", tags=["ai-insights"])
 
 @router.get("/insights")
 def get_ai_insights(device_id: str | None = None, db: Session = Depends(get_db)):
+    device_id = select_device_id(db, device_id)
     now = utcnow()
     week_ago = now - timedelta(days=7)
 

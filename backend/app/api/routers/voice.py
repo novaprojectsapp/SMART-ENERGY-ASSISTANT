@@ -10,6 +10,7 @@ from ...ai.schedule_actions import ScheduleActions
 from ...billing.engine import load_tariff, calculate_billing
 from ...models import Device, ApplianceActivity, AIModel
 from ...utils.time import utcnow
+from ...utils.device_selection import select_device_id
 from datetime import datetime, timedelta, timezone
 import json
 import logging
@@ -238,7 +239,8 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
         return "Visit the What-If Simulator page to model scenarios like reducing consumption by a certain percentage."
 
     if intent == "DEVICE_STATUS":
-        device = db.query(Device).first() if not device_id else db.query(Device).filter(Device.id == device_id).first()
+        effective_id = select_device_id(db, device_id)
+        device = db.query(Device).filter(Device.id == effective_id).first() if effective_id else None
         if not device:
             return "No device registered yet."
         if device.last_seen:
@@ -265,6 +267,10 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
 async def process_voice_query(req: VoiceQueryRequest, db: Session = Depends(get_db)):
     start_time = time.time()
 
+    # Always answer live-readings intents against the primary hardware device
+    # (ESP32-S3-01) when the caller does not pin a specific device.
+    device_id = select_device_id(db, req.device_id)
+
     intent_result = classify_intent(req.text)
     source = "LOCAL"
 
@@ -274,7 +280,7 @@ async def process_voice_query(req: VoiceQueryRequest, db: Session = Depends(get_
             intent_result = type("Intent", (), llm_result)()
             source = "LLM"
 
-    response_text = _handle_intent(intent_result, req.device_id, db, req.text)
+    response_text = _handle_intent(intent_result, device_id, db, req.text)
 
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
 

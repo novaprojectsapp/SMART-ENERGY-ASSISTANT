@@ -5,6 +5,7 @@ from datetime import datetime, timedelta, timezone
 from ...database import get_db
 from ...models import EnergyReading
 from ...billing.engine import load_tariff, calculate_billing
+from ...utils.device_selection import select_device_id
 import json
 import logging
 
@@ -31,6 +32,7 @@ def _get_period_kwh(db: Session, start: datetime, end: datetime, device_id: str 
 
 @router.get("/today")
 def get_today_billing(device_id: str | None = None, db: Session = Depends(get_db)):
+    device_id = select_device_id(db, device_id)
     now = datetime.now(timezone.utc)
     start_of_day = now.replace(hour=0, minute=0, second=0, microsecond=0)
 
@@ -44,6 +46,7 @@ def get_today_billing(device_id: str | None = None, db: Session = Depends(get_db
 
     return {
         "period": "today",
+        "device_id": device_id,
         "period_start": start_of_day.isoformat(),
         "period_end": now.isoformat(),
         "measured_kwh": round(kwh, 4),
@@ -73,6 +76,7 @@ def predict_bill(
     device_id: str | None = None,
     db: Session = Depends(get_db),
 ):
+    device_id = select_device_id(db, device_id)
     now = datetime.now(timezone.utc)
 
     kwh = _get_period_kwh(db, now - timedelta(days=7), now, device_id)
@@ -80,6 +84,7 @@ def predict_bill(
     if kwh <= 0:
         return {
             "status": "INSUFFICIENT_DATA",
+            "device_id": device_id,
             "message": "No consumption data available for prediction",
         }
 
@@ -89,11 +94,12 @@ def predict_bill(
     projected_monthly = avg_daily * 30
     projected_billing = avg_daily * (tariff.billing_period_months * 30)
 
-    monthly_result = calculate_billing(projectly_monthly, tariff, period_type="monthly_equivalent")
+    monthly_result = calculate_billing(projected_monthly, tariff, period_type="monthly_equivalent")
     billing_result = calculate_billing(projected_billing, tariff, period_type="billing_period")
 
     return {
         "status": "OK",
+        "device_id": device_id,
         "prediction_basis": "LAST_7_DAYS",
         "input_window_days": 7,
         "avg_daily_kwh": round(avg_daily, 4),

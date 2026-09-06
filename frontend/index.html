@@ -202,6 +202,7 @@
                         </div>
                     </div>`;
                 initVoice();
+                destroyFn = destroyVoice;
             } else if (page === 'coach') {
                 content.innerHTML = `<div id="coach-page"><div id="coach-content"></div></div>`;
                 initCoach();
@@ -241,10 +242,7 @@
         document.addEventListener('DOMContentLoaded', () => {
             loadPage('dashboard');
             setInterval(async () => {
-                try {
-                    const devices = await api.getDevices();
-                    updateDeviceStatus(devices);
-                } catch(e) {}
+                refreshHeaderStatus();
             }, 10000);
         });
     </script>

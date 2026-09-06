@@ -5,6 +5,7 @@ from ...database import get_db
 from ...billing.engine import load_tariff, calculate_billing
 from ...ai.data_access import get_energy_kwh
 from ...utils.time import utcnow
+from ...utils.device_selection import select_device_id
 from datetime import timedelta
 
 router = APIRouter(prefix="/api/v1", tags=["what-if"])
@@ -19,8 +20,9 @@ class WhatIfRequest(BaseModel):
 def simulate_what_if(req: WhatIfRequest, db: Session = Depends(get_db)):
     now = utcnow()
     week_start = now - timedelta(days=7)
+    device_id = select_device_id(db, req.device_id)
 
-    recent_kwh = get_energy_kwh(db, week_start, now, req.device_id)
+    recent_kwh = get_energy_kwh(db, week_start, now, device_id)
     if recent_kwh <= 0:
         return {"status": "INSUFFICIENT_DATA", "message": "No consumption data available for simulation."}
 
