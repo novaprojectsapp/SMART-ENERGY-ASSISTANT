@@ -6,8 +6,7 @@ Instead it writes a PENDING ControlCommand into the command queue. The ESP32
 polls the backend every ~1s, executes the relay, and acknowledges the result.
 Only after a real acknowledgement is a command marked EXECUTED (or FAILED).
 
-The previous adapter reported HARDWARE_CONTROL_NOT_AVAILABLE/SIMULATED. Now any
-control-capable appliance mapped to the real ESP32 device creates a genuine
+Any control-capable appliance mapped to a real ESP32 device creates a genuine
 PENDING command queued for hardware execution.
 """
 import logging

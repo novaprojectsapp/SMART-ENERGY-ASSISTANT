@@ -17,7 +17,7 @@ from datetime import datetime, timedelta
 from sqlalchemy.orm import Session
 
 from ..models import Appliance, ControlCommand, Device
-from ..utils.time import utcnow
+from ..utils.time import utcnow, naive_utc
 
 logger = logging.getLogger("smart_energy.control")
 
@@ -28,11 +28,6 @@ MAX_ATTEMPTS = 3
 
 def new_command_id() -> str:
     return str(uuid.uuid4())
-
-
-def _naive_utc(dt: datetime | None) -> datetime | None:
-    from ..services.scheduler import _naive_utc as _s
-    return _s(dt)
 
 
 def default_ttl_seconds() -> int:
@@ -68,19 +63,23 @@ class ControlService:
             raise ValueError(f"Appliance '{appliance.name}' is not control capable")
         if action not in ("ON", "OFF"):
             raise ValueError("Invalid action: must be ON or OFF")
+        if not appliance.device_id:
+            # A command with an empty/None device can never be polled by any
+            # ESP32. Reject it instead of silently queueing dead work.
+            raise ValueError(f"Appliance '{appliance.name}' has no ESP32 device mapped")
 
         ttl = ttl_seconds if ttl_seconds is not None else default_ttl_seconds()
         now = utcnow()
 
         command = ControlCommand(
             command_id=new_command_id(),
-            device_id=appliance.device_id or "",
+            device_id=appliance.device_id,
             appliance_id=appliance.id,
             channel=appliance.channel or 1,
             action=action,
             source=source,
             status="PENDING",
-            message=f"Control command queued for ESP32",
+            message="Control command queued for ESP32",
             created_at=now,
             expires_at=now + timedelta(seconds=ttl),
             attempt_count=0,
@@ -94,24 +93,32 @@ class ControlService:
         return self.db.query(Device).filter(Device.id == device_id).first()
 
     def pending_command(self, device_id: str) -> ControlCommand | None:
-        """Return the next PENDING (non-expired) command for this device,
-        or None. Safe to call every second (idempotent, no state change)."""
-        now = _naive_utc(utcnow())
+        """Return the next PENDING or DISPATCHED (still-unacknowledged,
+        non-expired) command for this device, or None.
+
+        DISPATCHED commands are re-returned deliberately so an ESP32 that lost
+        its ACK can re-poll the same command and re-acknowledge it — a command
+        must never get permanently stuck because an ACK failed. Safe to call
+        every second (idempotent, no state change)."""
+        now = naive_utc(utcnow())
         return (
             self.db.query(ControlCommand)
             .filter(
                 ControlCommand.device_id == device_id,
-                ControlCommand.status == "PENDING",
+                ControlCommand.status.in_(["PENDING", "DISPATCHED"]),
+                ControlCommand.expires_at.isnot(None),
+                ControlCommand.expires_at > now,
             )
             .order_by(ControlCommand.created_at.asc())
             .first()
         )
 
     def dispatch_or_expire(self, command: ControlCommand) -> ControlCommand:
-        """Mark PENDING commands that have expired as EXPIRED; otherwise mark
-        the command DISPATCHED (increments attempt_count)."""
-        now = _naive_utc(utcnow())
-        if command.expires_at is not None and _naive_utc(command.expires_at) <= now:
+        """Mark commands that have expired as EXPIRED; otherwise mark a PENDING
+        command DISPATCHED (increments attempt_count). Applies to both PENDING
+        and DISPATCHED states so an expired dispatched command is also handled."""
+        now = naive_utc(utcnow())
+        if command.expires_at is not None and naive_utc(command.expires_at) <= now:
             command.status = "EXPIRED"
             command.message = "Command expired before the ESP32 executed it."
             return command

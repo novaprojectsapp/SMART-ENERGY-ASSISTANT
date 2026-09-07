@@ -34,21 +34,12 @@ from sqlalchemy.orm import Session
 
 from ..models import Appliance, Schedule, ControlCommand
 from .control_service import ControlService
-from ..utils.time import utcnow
+from ..utils.time import utcnow, naive_utc as _naive_utc
 
 logger = logging.getLogger("smart_energy.scheduler")
 
 DEFAULT_TZ = "Asia/Kolkata"
 WEEKDAY_NAMES = ["monday", "tuesday", "wednesday", "thursday", "friday", "saturday", "sunday"]
-
-# SQLite round-trips datetimes as naive; keep everything in naive-UTC internally
-# so aware vs naive comparisons never crash.
-def _naive_utc(dt: datetime | None) -> datetime | None:
-    if dt is None:
-        return None
-    if dt.tzinfo is not None:
-        return dt.astimezone(timezone.utc).replace(tzinfo=None)
-    return dt
 
 
 class SchedulerService:

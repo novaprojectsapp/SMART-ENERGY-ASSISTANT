@@ -30,9 +30,12 @@ void setup() {
     delay(500);
     Serial.println("\n\n=== SMART ENERGY ESP32-S3 ===");
 
+    // Safety: drive the relay OFF first, before the network is brought up.
+    // This guarantees GPIO 40 can never power a socket during boot.
+    relay.begin();
+
     pzem.begin();
     wifi.beginAP();
-    relay.begin();
 
     Serial.println("\n========================================");
     Serial.println("SMART ENERGY ASSISTANT");

@@ -21,7 +21,7 @@ from ...schemas.schemas import (
 from ...services.scheduler import SchedulerService
 from ...services.control_service import ControlService
 from ...services.esp32_control import ESP32ControlService
-from ...utils.time import utcnow
+from ...utils.time import utcnow, naive_utc
 
 router = APIRouter(prefix="/api/v1", tags=["scheduling"])
 
@@ -128,20 +128,26 @@ def control_appliance(appliance_id: str, cmd_in: ControlCommandCreate, db: Sessi
 # ---------------------------------------------------------------------------
 @router.get("/devices/{device_id}/control/pending", response_model=PendingCommandResponse)
 def get_pending_control(device_id: str, db: Session = Depends(get_db)):
-    """Called by the ESP32 every ~1s. Returns the next PENDING command for this
-    device (never executed again after acknowledgement) or null."""
+    """Called by the ESP32 every ~1s. Returns the next PENDING or still-
+    unacknowledged DISPATCHED (non-expired) command for this device, or null.
+
+    A DISPATCHED command is re-returned on purpose: if the ESP32's ACK was lost,
+    it can re-poll the same command, re-execute idempotently, and re-ACK it.
+    Expired commands are marked EXPIRED and never returned as active work."""
     control = ControlService(db)
     device = control.resolve_device(device_id)
     if not device:
         raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
 
-    now = utcnow()
-    # Expire any stale PENDING commands for this device before dispatching.
+    now = naive_utc(utcnow())
+    # Expire any stale PENDING/DISPATCHED commands for this device before
+    # dispatching. Only the ESP32 ACK may produce EXECUTED; an expired command
+    # must never be executed or delivered again.
     stale = (
         db.query(ControlCommand)
         .filter(
             ControlCommand.device_id == device_id,
-            ControlCommand.status == "PENDING",
+            ControlCommand.status.in_(["PENDING", "DISPATCHED"]),
             ControlCommand.expires_at.isnot(None),
             ControlCommand.expires_at <= now,
         )
@@ -160,6 +166,10 @@ def get_pending_control(device_id: str, db: Session = Depends(get_db)):
 
     control.dispatch_or_expire(cmd)
     db.commit()
+
+    if cmd.status == "EXPIRED":
+        # Defensive: an expired command must never be delivered as work.
+        return PendingCommandResponse(command=None)
 
     return PendingCommandResponse(
         command={
@@ -182,23 +192,31 @@ def ack_control(device_id: str, command_id: str, ack: CommandAckRequest, db: Ses
     if not device:
         raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
 
-    cmd = control.acknowledge(
+    # Enforce ownership BEFORE mutating: a different ESP32 must never be able to
+    # acknowledge (and thereby confirm) another device's command.
+    cmd = (
+        db.query(ControlCommand)
+        .filter((ControlCommand.command_id == command_id) | (ControlCommand.id == command_id))
+        .first()
+    )
+    if not cmd:
+        raise HTTPException(status_code=404, detail="Command not found")
+    if cmd.device_id and cmd.device_id != device_id:
+        raise HTTPException(status_code=403, detail="Command belongs to a different device")
+
+    acknowledged = control.acknowledge(
         command_id,
         success=ack.success,
         relay_state=ack.relay_state,
         message=ack.message,
     )
-    if not cmd:
+    if not acknowledged:
         raise HTTPException(status_code=404, detail="Command not found")
-
-    # Only the owning device may acknowledge its command.
-    if cmd.device_id and cmd.device_id != device_id:
-        raise HTTPException(status_code=403, detail="Command belongs to a different device")
 
     db.commit()
     return CommandAckResponse(
-        status=cmd.status,
-        command_id=cmd.command_id,
+        status=acknowledged.status,
+        command_id=acknowledged.command_id,
         acknowledged=True,
     )
 

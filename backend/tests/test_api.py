@@ -1263,6 +1263,85 @@ def test_expired_command_not_returned_and_marked_expired():
     assert mine and mine[0]["status"] == "EXPIRED"
 
 
+def test_dispatched_command_can_be_repolled_and_acked():
+    """ACK-lost recovery: a DISPATCHED command must be re-returned on the next
+    poll so the ESP32 can re-acknowledge it instead of getting stuck forever."""
+    app = _make_hw_appliance()
+    did = app["device_id"]
+    cmd = _create_manual_command(app, "ON")
+    cid = cmd["command_id"]
+
+    first = client.get(f"/api/v1/devices/{did}/control/pending").json()
+    assert first["command"]["command_id"] == cid
+    cmds = client.get("/api/v1/control-commands?limit=50").json()
+    assert [c for c in cmds if c["command_id"] == cid][0]["status"] == "DISPATCHED"
+
+    # Second poll (ACK was lost) must return the SAME command, not null.
+    second = client.get(f"/api/v1/devices/{did}/control/pending").json()
+    assert second["command"] is not None
+    assert second["command"]["command_id"] == cid
+
+    # Re-polling a DISPATCHED command must NOT bump attempts again.
+    cmds = client.get("/api/v1/control-commands?limit=50").json()
+    dispatched = [c for c in cmds if c["command_id"] == cid][0]
+    assert dispatched["status"] == "DISPATCHED"
+
+    # The ESP32 finally acknowledges -> EXECUTED.
+    r = client.post(f"/api/v1/devices/{did}/control/{cid}/ack", json={
+        "success": True, "relay_state": "ON", "message": "Relay switched ON successfully",
+    })
+    assert r.status_code == 200
+    cmds = client.get("/api/v1/control-commands?limit=50").json()
+    assert [c for c in cmds if c["command_id"] == cid][0]["status"] == "EXECUTED"
+
+
+def test_expired_dispatched_command_not_returned():
+    """An expired DISPATCHED command must be marked EXPIRED and never delivered."""
+    from app.database import SessionLocal
+    from app.models import ControlCommand as CC
+    from datetime import datetime, timedelta, timezone
+    app = _make_hw_appliance()
+    did = app["device_id"]
+    cmd = _create_manual_command(app, "OFF")
+    cid = cmd["command_id"]
+
+    pending = client.get(f"/api/v1/devices/{did}/control/pending").json()
+    assert pending["command"]["command_id"] == cid
+
+    db = SessionLocal()
+    row = db.query(CC).filter(CC.command_id == cid).first()
+    row.expires_at = datetime.now(timezone.utc).replace(tzinfo=None) - timedelta(seconds=5)
+    db.commit()
+    db.close()
+
+    res = client.get(f"/api/v1/devices/{did}/control/pending").json()
+    assert res["command"] is None
+    cmds = client.get("/api/v1/control-commands?limit=50").json()
+    mine = [c for c in cmds if c["command_id"] == cid]
+    assert mine and mine[0]["status"] == "EXPIRED"
+
+
+def test_control_command_without_device_mapped_rejected():
+    """A command for a control-capable appliance with NO ESP32 device mapped
+    must be rejected up front — it could never be polled or executed."""
+    r = client.post("/api/v1/appliances", json={
+        "name": "Orphan socket", "type": "SOCKET", "channel": 1,
+        "device_id": "", "control_capable": True,
+    })
+    assert r.status_code == 201, r.text
+    app = r.json()
+
+    res = client.post(f"/api/v1/appliances/{app['id']}/control", json={
+        "appliance_id": app["id"], "action": "ON", "source": "USER",
+    })
+    assert res.status_code == 400
+    assert "no ESP32 device mapped" in res.json()["detail"]
+
+    # Nothing was queued for execution.
+    cmds = client.get("/api/v1/control-commands?limit=200").json()
+    assert not [c for c in cmds if c["appliance_id"] == app["id"]]
+
+
 def test_device_control_status_endpoint():
     app = _make_hw_appliance()
     did = app["device_id"]
