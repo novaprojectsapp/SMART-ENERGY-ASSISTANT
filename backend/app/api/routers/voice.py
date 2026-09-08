@@ -8,7 +8,7 @@ from ...ai.data_access import get_latest_reading, get_today_readings, calc_daily
 from ...ai.schedule_parser import extract_appliance_ref, parse_time
 from ...ai.schedule_actions import ScheduleActions
 from ...billing.engine import load_tariff, calculate_billing
-from ...models import Device, ApplianceActivity, AIModel
+from ...models import Device
 from ...utils.time import utcnow
 from ...utils.device_selection import select_device_id
 from datetime import datetime, timedelta, timezone
@@ -58,7 +58,7 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
         return (
             "I can help you with: current power, voltage, current, energy, frequency, "
             "power factor, today's usage, today's cost, monthly bill, bill prediction, "
-            "energy insights, anomalies, peak usage, appliance activity, "
+            "energy insights, anomalies, peak usage, "
             "daily, weekly, monthly usage, saving tips, what-if scenarios, and "
             "appliance scheduling. For example: 'turn on bulb 1 at 6 PM every day'."
         )
@@ -211,15 +211,13 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
         return "To check for anomalies, please visit the analytics page. Anomaly detection requires sufficient historical data."
 
     if intent == "APPLIANCE_ACTIVITY":
-        model = db.query(AIModel).filter(
-            AIModel.hardware_validated == True,
-            AIModel.status == "PUBLISHED",
-        ).order_by(AIModel.created_at.desc()).first()
-
-        if not model:
-            return "Appliance recognition model is not available yet. Real hardware validation is required."
-
-        return "Appliance recognition requires a validated model from real hardware data."
+        if not latest:
+            return "No appliance activity data yet. Once your device is streaming readings, I can describe the live draw on your dashboard."
+        return (
+            f"Your current measured draw is {_format_power(latest.power)} at "
+            f"{latest.voltage:.2f} volts. Individual appliance recognition is not part of "
+            "this version - check the Smart Scheduler for your connected socket control."
+        )
 
     if intent in ("DAILY_USAGE", "WEEKLY_USAGE", "MONTHLY_USAGE"):
         return f"Today's energy usage is {_format_energy(today_kwh)}. Visit the analytics page for detailed daily, weekly, and monthly charts."

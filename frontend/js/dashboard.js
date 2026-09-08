@@ -6,7 +6,6 @@ let lastLiveReading = null;
 async function loadDashboard() {
     const cardsEl = document.getElementById('live-cards');
     const connectionEl = document.getElementById('connection-section');
-    const applianceEl = document.getElementById('appliance-section');
     const insightsEl = document.getElementById('insights-section');
     const billingEl = document.getElementById('billing-section');
 
@@ -29,7 +28,6 @@ async function loadDashboard() {
                     <h3>Waiting for Device Data</h3>
                     <p>Connect your ESP32-S3 device to start receiving energy measurements.</p>
                 </div>`;
-            if (applianceEl) applianceEl.innerHTML = '';
             if (insightsEl) insightsEl.innerHTML = '';
             if (billingEl) billingEl.innerHTML = '';
             return;
@@ -38,7 +36,6 @@ async function loadDashboard() {
         lastLiveReading = latest[0];
         lastLiveTimestamp = latest[0].timestamp || null;
         renderLiveCards(cardsEl, latest[0]);
-        loadApplianceSection(applianceEl);
         loadInsightsSection(insightsEl);
         loadBillingSection(billingEl);
     } catch (e) {
@@ -170,51 +167,6 @@ function renderLiveCards(container, reading) {
             <div class="stat-card-value" style="font-size:18px;">${reading.data_source}</div>
             <div class="stat-card-sub">${formatDate(reading.timestamp)}</div>
         </div>`;
-}
-
-async function loadApplianceSection(container) {
-    if (!container) return;
-    try {
-        const data = await api.getApplianceActivity();
-        if (data.status === 'AI_MODEL_NOT_AVAILABLE') {
-            container.innerHTML = `
-                <div class="section-card">
-                    <div class="section-card-header">
-                        <span class="section-card-title">Appliance Activity</span>
-                        <span class="section-badge no-data">MODEL N/A</span>
-                    </div>
-                    <div class="empty-state" style="padding:30px;">
-                        <div class="icon">🤖</div>
-                        <h3>AI Model Not Available</h3>
-                        <p>Real hardware validation is required before appliance recognition can be enabled.</p>
-                    </div>
-                </div>`;
-            return;
-        }
-
-        let html = `
-            <div class="section-card">
-                <div class="section-card-header">
-                    <span class="section-card-title">Appliance Activity</span>
-                    <span class="section-badge calculated">AI-INFERRED</span>
-                </div>
-                <div class="appliance-grid">
-                    <div class="appliance-card">
-                        <div class="name">Bulb 1</div>
-                        <div class="state unknown">UNKNOWN</div>
-                        <div class="confidence">Model not available</div>
-                    </div>
-                    <div class="appliance-card">
-                        <div class="name">Bulb 2</div>
-                        <div class="state unknown">UNKNOWN</div>
-                        <div class="confidence">Model not available</div>
-                    </div>
-                </div>
-            </div>`;
-        container.innerHTML = html;
-    } catch (e) {
-        container.innerHTML = '';
-    }
 }
 
 async function loadInsightsSection(container) {

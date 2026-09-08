@@ -88,8 +88,6 @@ const api = {
     getBillingPredict: (days, deviceId) => api.get(`/billing/predict?days=${days}${deviceId ? '&device_id=' + deviceId : ''}`),
     getBillingTariff: () => api.get('/billing/tariff'),
     getAiInsights: (deviceId) => api.get(`/ai/insights${deviceId ? '?device_id=' + deviceId : ''}`),
-    getApplianceActivity: () => api.get('/appliances/activity'),
-    getApplianceModels: () => api.get('/appliances/models'),
     voiceQuery: (text, deviceId) => api.post('/voice/query', { text, device_id: deviceId }),
     getRecommendations: (deviceId) => api.get(`/recommendations${deviceId ? '?device_id=' + deviceId : ''}`),
     simulateWhatIf: (reductionPercent, deviceId) => api.post('/what-if', { reduction_percent: reductionPercent, device_id: deviceId }),

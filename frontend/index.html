@@ -26,9 +26,6 @@
                     <a class="nav-link" data-page="analytics" onclick="navigate('analytics')">
                         <span class="icon">📈</span> Analytics
                     </a>
-                    <a class="nav-link" data-page="appliance" onclick="navigate('appliance')">
-                        <span class="icon">🔌</span> Appliances
-                    </a>
                     <a class="nav-link" data-page="scheduler" onclick="navigate('scheduler')">
                         <span class="icon">⏰</span> Smart Scheduler
                     </a>
@@ -86,7 +83,6 @@
                     </div>
                     <div id="connection-section"></div>
                     <div id="billing-section"></div>
-                    <div id="appliance-section"></div>
                     <div id="insights-section"></div>
                 </div>
             </div>
@@ -98,7 +94,6 @@
     <script src="/js/charts.js"></script>
     <script src="/js/dashboard.js"></script>
     <script src="/js/analytics.js"></script>
-    <script src="/js/appliance.js"></script>
     <script src="/js/scheduler.js"></script>
     <script src="/js/cost.js"></script>
     <script src="/js/voice.js"></script>
@@ -123,7 +118,6 @@
             const titles = {
                 dashboard: 'Dashboard',
                 analytics: 'Analytics',
-                appliance: 'Appliances',
                 scheduler: 'Smart Scheduler',
                 cost: 'Cost & Billing',
                 voice: 'Voice Assistant',
@@ -147,7 +141,6 @@
                         </div>
                         <div id="connection-section"></div>
                         <div id="billing-section"></div>
-                        <div id="appliance-section"></div>
                         <div id="insights-section"></div>
                     </div>`;
                 initDashboard();
@@ -164,13 +157,6 @@
                     </div>`;
                 initAnalytics();
                 destroyFn = destroyAnalytics;
-            } else if (page === 'appliance') {
-                content.innerHTML = `
-                    <div id="appliance-page">
-                        <div id="appliance-activity"></div>
-                        <div id="appliance-models"></div>
-                    </div>`;
-                initAppliance();
             } else if (page === 'scheduler') {
                 content.innerHTML = `<div id="scheduler-page"></div>`;
                 initScheduler();

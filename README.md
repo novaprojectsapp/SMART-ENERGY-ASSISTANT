@@ -154,8 +154,6 @@ smart-energy-assistant/
 | `/api/v1/analytics/anomalies` | GET | Anomaly detection |
 | `/api/v1/analytics/patterns` | GET | Usage patterns |
 | `/api/v1/ai/insights` | GET | AI insights |
-| `/api/v1/appliances/activity` | GET | Appliance activity |
-| `/api/v1/appliances/models` | GET | ML models |
 | `/api/v1/voice/query` | POST | Voice query |
 | `/api/v1/recommendations` | GET | Recommendations |
 | `/api/v1/what-if` | POST | What-If simulation |

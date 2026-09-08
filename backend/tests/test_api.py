@@ -216,19 +216,6 @@ def test_ai_insights():
     assert res.status_code == 200
 
 
-def test_appliance_activity():
-    res = client.get("/api/v1/appliances/activity")
-    assert res.status_code == 200
-    data = res.json()
-    assert data["status"] in ("AI_MODEL_NOT_AVAILABLE", "NO_DATA", "OK")
-
-
-def test_appliance_models():
-    res = client.get("/api/v1/appliances/models")
-    assert res.status_code == 200
-    assert isinstance(res.json(), list)
-
-
 def test_voice_query_power():
     res = client.post("/api/v1/voice/query", json={"text": "What is my current power?"})
     assert res.status_code == 200

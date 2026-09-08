@@ -16,7 +16,6 @@ from .api.routers import (
     billing,
     analytics,
     voice,
-    appliances,
     recommendations,
     whatif,
     settings,
@@ -62,7 +61,6 @@ app.include_router(readings.router)
 app.include_router(billing.router)
 app.include_router(analytics.router)
 app.include_router(voice.router)
-app.include_router(appliances.router)
 app.include_router(recommendations.router)
 app.include_router(whatif.router)
 app.include_router(settings.router)
