@@ -18,6 +18,7 @@ from sqlalchemy.orm import Session
 
 from ..models import Appliance, ControlCommand, Device
 from ..utils.time import utcnow, naive_utc
+from ..utils.capabilities import normalize_capabilities
 
 logger = logging.getLogger("smart_energy.control")
 
@@ -68,6 +69,14 @@ class ControlService:
             # ESP32. Reject it instead of silently queueing dead work.
             raise ValueError(f"Appliance '{appliance.name}' has no ESP32 device mapped")
 
+        caps = self.device_capabilities(appliance.device_id)
+        if not caps.get("relay_control"):
+            # The device itself declared it has no relay hardware. Queuing a
+            # command would be a lie: nothing physical would ever actuate.
+            raise ValueError(
+                f"Appliance '{appliance.name}' is mapped to a device without relay control capability"
+            )
+
         ttl = ttl_seconds if ttl_seconds is not None else default_ttl_seconds()
         now = utcnow()
 
@@ -86,7 +95,18 @@ class ControlService:
             confirmed_relay_state="UNKNOWN",
         )
         self.db.add(command)
+        logger.info(
+            "[CONTROL] Command created | command_id=%s device=%s appliance=%s action=%s channel=%s source=%s",
+            command.command_id, command.device_id, command.appliance_id,
+            command.action, command.channel, command.source,
+        )
         return command
+
+    def device_capabilities(self, device_id: str) -> dict:
+        """Return the device's normalized capabilities (relay_control, channels,
+        telemetry). Defaults describe the ESP32-S3 hardware when unspecified."""
+        device = self.db.query(Device).filter(Device.id == device_id).first()
+        return normalize_capabilities(device.capabilities if device else None)
 
     # ------------------------------------------------------------------ queue
     def resolve_device(self, device_id: str) -> Device | None:

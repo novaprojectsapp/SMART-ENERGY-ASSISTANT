@@ -15,6 +15,9 @@ class Device(Base):
     last_seen = Column(DateTime, nullable=True)
     created_at = Column(DateTime, default=utcnow)
     notes = Column(Text, default="")
+    # Canonical JSON of the device's self-declared capabilities, e.g.
+    # {"telemetry": true, "relay_control": true, "channels": [1]}.
+    capabilities = Column(Text, default="")
 
     readings = relationship("EnergyReading", back_populates="device", cascade="all, delete-orphan")
     events = relationship("EnergyEvent", back_populates="device", cascade="all, delete-orphan")

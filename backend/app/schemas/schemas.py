@@ -3,6 +3,7 @@ import json
 from typing import Optional
 from datetime import datetime, timezone
 from ..utils.time import to_iso
+from ..utils.capabilities import normalize_capabilities
 
 
 def _dt_to_iso(v: Optional[datetime]) -> Optional[str]:
@@ -22,6 +23,9 @@ class DeviceCreate(BaseModel):
     device_type: str = Field(default="PZEM-004T", max_length=32)
     location: str = Field(default="", max_length=128)
     notes: str = Field(default="", max_length=512)
+    # Self-declared hardware capabilities. Normalized to a canonical dict:
+    #   {"telemetry": bool, "relay_control": bool, "channels": [int]}
+    capabilities: Optional[dict] = None
 
 
 class DeviceResponse(BaseModel):
@@ -34,6 +38,7 @@ class DeviceResponse(BaseModel):
     created_at: datetime
     notes: str
     status: str = "NO_DATA"
+    capabilities: Optional[dict] = None
 
     class Config:
         from_attributes = True
@@ -41,6 +46,18 @@ class DeviceResponse(BaseModel):
     @field_serializer("last_seen", "created_at")
     def _serialize_dt(self, v, _info):
         return _dt_to_iso(v)
+
+    @field_validator("capabilities", mode="before")
+    @classmethod
+    def _parse_capabilities(cls, v):
+        # The ORM exposes the raw JSON string; normalize to a canonical dict
+        # before field validation so model_validate() works on newer Pydantic.
+        return normalize_capabilities(v)
+
+    @field_serializer("capabilities")
+    def _serialize_capabilities(self, v, _info):
+        # The ORM exposes the raw JSON string; normalize to a canonical dict.
+        return normalize_capabilities(v)
 
 
 class ReadingCreate(BaseModel):
@@ -339,3 +356,38 @@ class CommandAckResponse(BaseModel):
     status: str
     command_id: str
     acknowledged: bool = True
+
+
+CONTROL_STATUS_HARDWARE_CONNECTED = "HARDWARE_CONNECTED"
+CONTROL_STATUS_HARDWARE_OFFLINE = "HARDWARE_OFFLINE"
+CONTROL_STATUS_PENDING_HARDWARE = "PENDING_HARDWARE"
+CONTROL_STATUSES_DISPLAY = {
+    CONTROL_STATUS_HARDWARE_CONNECTED,
+    CONTROL_STATUS_HARDWARE_OFFLINE,
+    CONTROL_STATUS_PENDING_HARDWARE,
+}
+
+
+class DeviceControlAppliance(BaseModel):
+    id: str
+    name: str
+    channel: int
+    confirmed_state: str = "UNKNOWN"
+    last_control_at: Optional[datetime] = None
+
+
+class DeviceControlStatusResponse(BaseModel):
+    device_id: str
+    # Source of truth for the Smart Scheduler control panel. The frontend only
+    # renders this value; it never computes the state itself.
+    control_status: str = CONTROL_STATUS_PENDING_HARDWARE
+    hardware_control_available: bool = False
+    device_online: bool = False
+    relay_channels: list[int] = Field(default_factory=list)
+    telemetry_capable: bool = False
+    last_seen: Optional[datetime] = None
+    appliances: list[DeviceControlAppliance] = Field(default_factory=list)
+
+    @field_serializer("last_seen")
+    def _serialize_dt(self, v, _info):
+        return _dt_to_iso(v)

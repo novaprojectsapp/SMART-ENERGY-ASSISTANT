@@ -6,6 +6,7 @@ from ...models import Device, EnergyReading
 from ...schemas.schemas import DeviceCreate, DeviceResponse
 from ...utils.time import utcnow, to_iso
 from ...utils.freshness import freshness_status
+from ...utils.capabilities import normalize_capabilities, encode_capabilities
 import logging
 
 logger = logging.getLogger("smart_energy.api.devices")
@@ -18,9 +19,17 @@ def _device_status(device: Device, db: Session) -> str:
 
 @router.post("", response_model=DeviceResponse, status_code=201)
 def register_device(device_in: DeviceCreate, db: Session = Depends(get_db)):
+    caps_json = encode_capabilities(device_in.capabilities)
     existing = db.query(Device).filter(Device.id == device_in.id).first()
     if existing:
-        raise HTTPException(status_code=409, detail=f"Device '{device_in.id}' already registered")
+        # Idempotent re-registration: refresh the self-declared capabilities and
+        # name from the (possibly newer) firmware, keep the 409 so callers can
+        # still detect "already known" without treating it as an error.
+        existing.capabilities = caps_json
+        if device_in.name:
+            existing.name = device_in.name
+        db.commit()
+        raise HTTPException(status_code=409, detail=f"Device '{device_in.id}' already registered (capabilities refreshed)")
 
     device = Device(
         id=device_in.id,
@@ -28,12 +37,16 @@ def register_device(device_in: DeviceCreate, db: Session = Depends(get_db)):
         device_type=device_in.device_type,
         location=device_in.location,
         notes=device_in.notes,
+        capabilities=caps_json,
         created_at=utcnow(),
     )
     db.add(device)
     db.commit()
     db.refresh(device)
-    logger.info("Device registered: %s (%s)", device.id, device.name)
+    logger.info(
+        "Device registered: %s (%s) capabilities=%s",
+        device.id, device.name, normalize_capabilities(caps_json),
+    )
 
     resp = DeviceResponse.model_validate(device)
     resp.status = _device_status(device, db)

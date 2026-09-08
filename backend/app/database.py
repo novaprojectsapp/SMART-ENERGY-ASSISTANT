@@ -72,6 +72,9 @@ _MIGRATION_COLUMNS: dict[str, dict[str, str]] = {
         "last_confirmed_state": "VARCHAR(16) DEFAULT 'UNKNOWN'",
         "last_control_at": "DATETIME",
     },
+    "devices": {
+        "capabilities": "TEXT DEFAULT ''",
+    },
 }
 
 
