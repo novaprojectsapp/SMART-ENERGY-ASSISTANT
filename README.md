@@ -165,7 +165,7 @@ smart-energy-assistant/
 | `/api/v1/appliances/{id}` | GET/PUT/DELETE | Get/update/delete appliance |
 | `/api/v1/appliances/{id}/control` | POST | Manual ON/OFF (queues a PENDING ESP32 command) |
 | `/api/v1/control-commands` | GET | Control command history (full lifecycle) |
-| `/api/v1/devices/{id}/control/pending` | GET | ESP32 polling endpoint (next PENDING command) |
+| `/api/v1/devices/{id}/control/pending` | GET | ESP32 polling endpoint (compact JSON with `has_command` + `command_id`/`device_id`/`channel`/`action`) |
 | `/api/v1/devices/{id}/control/{cmd}/ack` | POST | ESP32 acknowledgement (→ EXECUTED/FAILED) |
 | `/api/v1/devices/{id}/control/status` | GET | Live device control status |
 | `/api/v1/schedules` | GET/POST | List/create schedules |

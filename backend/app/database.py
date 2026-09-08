@@ -37,6 +37,7 @@ def get_db():
 def init_db():
     Base.metadata.create_all(bind=engine)
     _safe_migrate()
+    _fix_appliance_device_mappings()
 
 
 def _table_exists(conn, table: str) -> bool:
@@ -95,3 +96,29 @@ def _safe_migrate():
                 except Exception:
                     # Column may already exist (race) or be non-addable; ignore safely.
                     continue
+
+
+def _fix_appliance_device_mappings():
+    """Repair appliance hardware mappings, never override a valid one.
+
+    A command for an appliance with an empty/self-referencing device_id can
+    never be polled by the ESP32 (control_service rejects it at creation time).
+    This startup fixup binds only those broken appliances to the primary
+    hardware device (ESP32-S3-01) so existing records remain controllable.
+    Correct mappings to OTHER registered devices are left untouched."""
+    if "sqlite" not in DATABASE_URL:
+        return
+    with engine.begin() as conn:
+        if not _table_exists(conn, "appliances"):
+            return
+        try:
+            conn.execute(
+                text(
+                    "UPDATE appliances SET device_id = :pid "
+                    "WHERE device_id IS NULL OR device_id = '' OR device_id = id"
+                ),
+                {"pid": settings.PRIMARY_DEVICE_ID},
+            )
+        except Exception:
+            # Non-critical: never block startup on a best-effort data repair.
+            pass

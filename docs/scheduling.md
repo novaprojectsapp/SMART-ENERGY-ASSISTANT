@@ -123,10 +123,28 @@ Scheduler page) ---->|  appliances / schedules / control        |
 | Endpoint | Method | Description |
 |----------|--------|-------------|
 | `/api/v1/appliances/{id}/control` | POST | Manual control (ON/OFF), source USER/VOICE/SCHEDULE; creates a PENDING command and returns it |
-| `/api/v1/devices/{device_id}/control/pending` | GET | ESP32 polling endpoint: returns the next non-expired PENDING command for the device (or `command: null`) |
+| `/api/v1/devices/{device_id}/control/pending` | GET | ESP32 polling endpoint: returns the next non-expired PENDING/DISPATCHED command for the device as a compact JSON (or `{"has_command": false, "command": null}`) |
 | `/api/v1/devices/{device_id}/control/{command_id}/ack` | POST | ESP32 acknowledgement: marks EXECUTED (success) or FAILED; device-mismatched ACKs are rejected with 403 |
 | `/api/v1/devices/{device_id}/control/status` | GET | Live control status for a device (hardware availability + appliances + confirmed states) |
 | `/api/v1/control-commands` | GET | Recent control command history (full lifecycle fields) |
+
+### Pending-command wire contract (ESP32)
+
+The polling response is deliberately **compact** — the ESP32 firmware parses it into a
+fixed `StaticJsonDocument<512>` (ArduinoJson v6). A bloated payload (~305 bytes with
+`id`/`appliance_id`/timestamps previously included) overflowed the 512-byte parse pool,
+`deserializeJson()` returned `NoMemory`, and every command quietly expired. The contract
+now carries only what the firmware needs:
+
+```json
+{"has_command": true, "command": {"command_id": "cf318789-...", "device_id": "ESP32-S3-01", "channel": 1, "action": "ON"}}
+```
+
+- `has_command: false` → `"command": null` (no pending work; do nothing).
+- `has_command: true` → actuate `channel` to `action`, then
+  `POST /api/v1/devices/{device_id}/control/{command_id}/ack`.
+- The full lifecycle fields (`appliance_id`, `created_at`, `expires_at`, ...) remain
+  available via `GET /control-commands`.
 
 ### Schedules
 

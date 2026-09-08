@@ -96,9 +96,9 @@ class ControlService:
         )
         self.db.add(command)
         logger.info(
-            "[CONTROL] Command created | command_id=%s device=%s appliance=%s action=%s channel=%s source=%s",
+            "[CONTROL] Command created | command_id=%s device=%s appliance=%s action=%s channel=%s source=%s expires_at=%s",
             command.command_id, command.device_id, command.appliance_id,
-            command.action, command.channel, command.source,
+            command.action, command.channel, command.source, command.expires_at,
         )
         return command
 
@@ -177,6 +177,11 @@ class ControlService:
             return None
 
         now = utcnow()
+        logger.info(
+            "[CONTROL] ACK received | command_id=%s device=%s action=%s success=%s relay_state=%s ack_msg=%s",
+            command_id, command.device_id, command.action, success,
+            relay_state if relay_state != "UNKNOWN" else "UNKNOWN", message,
+        )
         if success:
             command.status = "EXECUTED"
             command.message = message or (

@@ -328,21 +328,25 @@ class ControlApiResponse(BaseModel):
 
 
 class PendingCommand(BaseModel):
-    id: str
+    """Compact wire contract for the ESP32 polling endpoint.
+
+    Deliberately minimal: the firmware parses this payload into a fixed
+    ``StaticJsonDocument<512>`` (api_client.cpp). Extra fields (id,
+    appliance_id, created_at, expires_at) made the JSON ~305 bytes, which
+    ArduinoJson v6 cannot hold in the 512-byte parse pool, so the ESP32
+    silently dropped every command. See esp32 control fix (2026-09-08)."""
+
     command_id: str
     device_id: str
-    appliance_id: str
     channel: int
     action: str
-    created_at: Optional[datetime] = None
-    expires_at: Optional[datetime] = None
 
-    @field_serializer("created_at", "expires_at")
-    def _serialize_dt(self, v, _info):
-        return _dt_to_iso(v)
+    class Config:
+        from_attributes = True
 
 
 class PendingCommandResponse(BaseModel):
+    has_command: bool = False
     command: Optional[PendingCommand] = None
 
 

@@ -1,3 +1,5 @@
+import logging
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 from pydantic import BaseModel
@@ -24,6 +26,8 @@ from ...services.esp32_control import ESP32ControlService
 from ...utils.time import utcnow, naive_utc
 
 router = APIRouter(prefix="/api/v1", tags=["scheduling"])
+
+logger = logging.getLogger("smart_energy.api.scheduling")
 
 
 # ---------------------------------------------------------------------------
@@ -139,6 +143,8 @@ def get_pending_control(device_id: str, db: Session = Depends(get_db)):
     if not device:
         raise HTTPException(status_code=404, detail=f"Device '{device_id}' not found")
 
+    logger.info("[CONTROL] Poll received | device=%s", device_id)
+
     now = naive_utc(utcnow())
     # Expire any stale PENDING/DISPATCHED commands for this device before
     # dispatching. Only the ESP32 ACK may produce EXECUTED; an expired command
@@ -156,12 +162,17 @@ def get_pending_control(device_id: str, db: Session = Depends(get_db)):
     for c in stale:
         c.status = "EXPIRED"
         c.message = "Command expired before the ESP32 executed it."
+        logger.info(
+            "[CONTROL] Expiring command | command_id=%s action=%s channel=%s created_at=%s expires_at=%s now=%s",
+            c.command_id, c.action, c.channel, c.created_at, c.expires_at, now,
+        )
     if stale:
         db.commit()
 
     cmd = control.pending_command(device_id)
     if not cmd:
         db.commit()
+        logger.info("[CONTROL] Pending commands found: 0")
         return PendingCommandResponse(command=None)
 
     control.dispatch_or_expire(cmd)
@@ -169,19 +180,23 @@ def get_pending_control(device_id: str, db: Session = Depends(get_db)):
 
     if cmd.status == "EXPIRED":
         # Defensive: an expired command must never be delivered as work.
+        logger.info("[CONTROL] Returning command: none (expired)")
         return PendingCommandResponse(command=None)
 
+    logger.info(
+        "[CONTROL] Returning command | command_id=%s device=%s channel=%s action=%s status=%s",
+        cmd.command_id, cmd.device_id, cmd.channel, cmd.action, cmd.status,
+    )
+    # Compact wire contract: the ESP32 parses this into a fixed
+    # StaticJsonDocument<512>, so no id/appliance_id/timestamps here.
     return PendingCommandResponse(
+        has_command=True,
         command={
-            "id": cmd.id,
             "command_id": cmd.command_id,
             "device_id": cmd.device_id,
-            "appliance_id": cmd.appliance_id,
             "channel": cmd.channel,
             "action": cmd.action,
-            "created_at": cmd.created_at,
-            "expires_at": cmd.expires_at,
-        }
+        },
     )
 
 
