@@ -108,11 +108,14 @@ extraction directory. Logs go to `%LOCALAPPDATA%\SmartEnergyAssistant\logs\`.
 
 - The backend binds `0.0.0.0:8000`, NOT `127.0.0.1`, so the ESP32 can reach
   it over the laptop's Wi-Fi hotspot interface.
-- The ESP32 firmware posts to `http://192.168.4.2:8000` (hardcoded). The
-  laptop must have IP `192.168.4.2` while connected to the `SmartEnergy`
-  SSID. This is not changed by the app.
-- Windows Firewall will prompt on the first run; it must be allowed for
-  inbound TCP 8000. The app never disables or alters the firewall itself.
+- The ESP32 backend URL is **configured at runtime**. The launcher detects the
+  laptop's IPv4 address on the `SmartEnergyESP32` network and pushes
+  `http://<detected-ip>:8000` to the ESP32 via `POST /api/backend/config`
+  (verified with `GET /api/backend/status`). The firmware persists it in NVS,
+  so a reboot keeps the same URL. No `192.168.4.2` is hardcoded anywhere.
+- On startup the app adds firewall rule `SmartEnergyBackend8000` (inbound TCP
+  8000, Private + Public) automatically via netsh when it has permission. The
+  app never disables or alters the firewall beyond this one rule.
 
 ## Known limitations
 

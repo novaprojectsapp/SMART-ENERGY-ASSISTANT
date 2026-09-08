@@ -3,11 +3,13 @@
 #include "config.h"
 #include "pzem_manager.h"
 #include "wifi_manager.h"
+#include "config_server.h"
 #include "api_client.h"
 #include "relay_manager.h"
 
 PZEMManager pzem;
 WiFiManager wifi;
+ConfigServer configServer;
 APIClient api;
 RelayManager relay;
 
@@ -37,13 +39,19 @@ void setup() {
     pzem.begin();
     wifi.beginAP();
 
+    // Apply the restored/persisted backend URL (if any) to the API client.
+    configServer.begin();
+    if (configServer.isConfigured()) {
+        api.setBaseUrl(configServer.getBackendUrl());
+    }
+    configServer.onConfigured(onBackendConfigured);
+
     Serial.println("\n========================================");
     Serial.println("SMART ENERGY ASSISTANT");
     Serial.println("NETWORK CONFIGURATION");
     Serial.println("========================================");
     Serial.printf("ESP32 AP IP:   %s\n", wifi.getLocalIP().c_str());
-    Serial.printf("Backend IP:    %s\n", BACKEND_HOST);
-    Serial.printf("Backend Port:  %d\n", BACKEND_PORT);
+    Serial.printf("Backend URL:   %s\n", api.isConfigured() ? api.baseUrl().c_str() : "(not configured - waiting for desktop EXE)");
     Serial.printf("Device ID:     %s\n", DEVICE_ID);
     Serial.printf("Relay GPIO:    %d (Active-Low: %s)\n", RELAY_CHANNEL_1_PIN, RELAY_ACTIVE_LOW ? "YES" : "NO");
     Serial.println("========================================\n");
@@ -51,6 +59,9 @@ void setup() {
 
 void loop() {
     unsigned long now = millis();
+
+    // ---------- Config server: serves POST /api/backend/config + GET /api/backend/status ----------
+    configServer.tick();
 
     // ---------- Periodic PZEM reading (always runs, independent of Wi-Fi) ----------
     if (now - lastPzemRead >= PZEM_READ_INTERVAL_MS) {
@@ -77,8 +88,8 @@ void loop() {
         }
     }
 
-    // ---------- Register device (only when laptop is connected) ----------
-    if (laptopConnected && !deviceRegistered && (now - lastRegisterAttempt >= DEVICE_REGISTER_RETRY_MS)) {
+    // ---------- Register device (only when a laptop is connected AND a backend URL is configured) ----------
+    if (laptopConnected && api.isConfigured() && !deviceRegistered && (now - lastRegisterAttempt >= DEVICE_REGISTER_RETRY_MS)) {
         lastRegisterAttempt = now;
         deviceRegistered = api.registerDevice(DEVICE_ID, DEVICE_NAME);
         if (!deviceRegistered) {
@@ -86,8 +97,8 @@ void loop() {
         }
     }
 
-    // ---------- Periodic measurement upload (connected + registered only) ----------
-    if (laptopConnected && deviceRegistered && lastReading.valid && (now - lastSend >= MEASUREMENT_INTERVAL_MS)) {
+    // ---------- Periodic measurement upload (connected + registered + configured only) ----------
+    if (laptopConnected && api.isConfigured() && deviceRegistered && lastReading.valid && (now - lastSend >= MEASUREMENT_INTERVAL_MS)) {
         lastSend = now;
         bool ok = api.sendMeasurement(
             DEVICE_ID,
@@ -100,11 +111,23 @@ void loop() {
         Serial.printf("[SYS] Send result: %s\n\n", ok ? "OK" : "FAILED (will retry next cycle)");
     }
 
-    // ---------- Control command polling (connected + registered only) ----------
-    if (laptopConnected && deviceRegistered && (now - lastControlPoll >= CONTROL_POLL_INTERVAL_MS)) {
+    // ---------- Control command polling (connected + registered + configured only) ----------
+    if (laptopConnected && api.isConfigured() && deviceRegistered && (now - lastControlPoll >= CONTROL_POLL_INTERVAL_MS)) {
         lastControlPoll = now;
         handleControlPoll();
     }
+}
+
+// Called by the ConfigServer whenever the desktop EXE pushes a new backend URL.
+// Resets the registration state and triggers an immediate registration attempt.
+void onBackendConfigured() {
+    Serial.println("[SYS] New backend URL received - resetting registration state");
+    deviceRegistered = false;
+    api.setBaseUrl(configServer.getBackendUrl());
+    // Bump lastRegisterAttempt so the very next loop attempts registration now.
+    lastRegisterAttempt = millis() - DEVICE_REGISTER_RETRY_MS;
+    lastSend = 0;
+    lastControlPoll = 0;
 }
 
 // Fetch any pending command, execute the relay, and acknowledge.

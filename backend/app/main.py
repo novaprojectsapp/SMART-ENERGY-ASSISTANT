@@ -22,6 +22,7 @@ from .api.routers import (
     reports,
     ai_insights,
     scheduling,
+    setup,
 )
 
 logger = setup_logging()
@@ -67,6 +68,7 @@ app.include_router(settings.router)
 app.include_router(reports.router)
 app.include_router(ai_insights.router)
 app.include_router(scheduling.router)
+app.include_router(setup.router)
 
 
 @app.exception_handler(Exception)

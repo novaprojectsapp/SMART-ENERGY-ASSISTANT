@@ -173,12 +173,17 @@ smart-energy-assistant/
 
 ## ESP32 Connection
 
-1. Find your laptop's local IP
-2. Configure ESP32 to send POST requests to `http://<LAPTOP_IP>:8000/api/v1/devices/{device_id}/readings`
-3. Ensure firewall allows port 8000
-4. Both devices must be on same Wi-Fi network
+1. Power on the ESP32; it creates the `SmartEnergyESP32` access point at `192.168.4.1`.
+2. Connect the laptop to the `SmartEnergyESP32` Wi-Fi.
+3. Start `SmartEnergyAssistant.exe`. It starts the backend on `0.0.0.0:8000`,
+   detects the laptop's IPv4 address (no hardcoded `192.168.4.2`), pushes
+   `http://<detected-ip>:8000` to the ESP32 via `POST /api/backend/config`, and
+   verifies it with `GET /api/backend/status`.
+4. The ESP32 registers, uploads PZEM readings, polls control commands and
+   acknowledges them, all to the dynamically configured URL. Firewall rule
+   `SmartEnergyBackend8000` (TCP 8000) is added automatically.
 
-The ESP32-S3-01 also **polls** `http://192.168.4.2:8000/api/v1/devices/ESP32-S3-01/control/pending`
+The ESP32-S3-01 polls `http://<detected-laptop-ip>:8000/api/v1/devices/ESP32-S3-01/control/pending`
 about every second and acknowledges executed commands, so the relay on GPIO 40 is
 driven reliably with honest confirmation back to the dashboard.
 

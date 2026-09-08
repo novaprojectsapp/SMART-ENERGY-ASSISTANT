@@ -16,6 +16,7 @@ import logging
 import os
 from logging.handlers import RotatingFileHandler
 import sqlite3
+import subprocess
 import sys
 import threading
 import webbrowser
@@ -27,6 +28,7 @@ PORT = 8000
 DASHBOARD_URL = f"http://127.0.0.1:{PORT}/"
 MUTEX_NAME = f"Local\\{APP_NAME}.SingleInstance"
 HEALTH_TIMEOUT_SECONDS = 30.0
+FIREWALL_RULE_NAME = "SmartEnergyBackend8000"
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
@@ -48,11 +50,15 @@ from backend.app.utils.startup import (  # noqa: E402
     port_in_use,
     wait_until_ready,
 )
+from backend.app.utils.esp32_bridge import ESP32_AP_IP, ESP32_CONFIG_PORT, backend_url_for  # noqa: E402
+from backend.app.utils.esp32_sync import ESP32Sync  # noqa: E402
 
 logger = logging.getLogger("sea_launcher")
 
 _server = None
 _mutex_handle = None
+_esp32_sync = None
+_sync_status = None
 
 
 def setup_logging(log_path: Path) -> None:
@@ -152,6 +158,64 @@ def request_shutdown() -> None:
         _server.should_exit = True
 
 
+def ensure_firewall_rule() -> bool:
+    """Best-effort: allow inbound TCP 8000 on Private + Public profiles.
+
+    Uses the existing rule name SmartEnergyBackend8000. Requires admin rights;
+    when unavailable this fails silently and logs a warning (the backend still
+    works, but ESP32 uploads need the rule present on clean client machines).
+    """
+    netsh = ["netsh", "advfirewall", "firewall"]
+    try:
+        probe = subprocess.run(
+            netsh + ["show", "rule", f"name={FIREWALL_RULE_NAME}"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        exists = FIREWALL_RULE_NAME.lower() in probe.stdout.lower()
+        if exists:
+            logger.info("Firewall rule '%s' already exists.", FIREWALL_RULE_NAME)
+            return True
+        add = subprocess.run(
+            netsh + [
+                "add", "rule",
+                f"name={FIREWALL_RULE_NAME}",
+                "dir=in", "action=allow",
+                "protocol=TCP", f"localport={PORT}",
+                "profile=private,public",
+                "enable=yes",
+            ],
+            capture_output=True, text=True, timeout=15,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        if add.returncode == 0:
+            logger.info("Firewall rule '%s' added (TCP %s).", FIREWALL_RULE_NAME, PORT)
+            return True
+        logger.warning(
+            "Could not add firewall rule (rc=%s): %s",
+            add.returncode, add.stderr.strip()[:300],
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        logger.warning("Firewall rule setup skipped: %s", exc)
+    return False
+
+
+def start_esp32_sync() -> None:
+    """Start the background ESP32 backend auto-configuration service."""
+    global _esp32_sync
+    if _esp32_sync is not None and _esp32_sync.is_alive():
+        return
+    _esp32_sync = ESP32Sync(port=PORT, interval=2.0, on_status=on_sync_status)
+    _esp32_sync.start()
+    logger.info("ESP32 auto-config service started (AP %s:%s).", ESP32_AP_IP, ESP32_CONFIG_PORT)
+
+
+def on_sync_status(status) -> None:
+    """Store the latest ESP32 sync state for the status window."""
+    global _sync_status
+    _sync_status = status
+
+
 def main() -> int:
     try:
         app_data = data_dir()
@@ -185,6 +249,7 @@ def main() -> int:
             return 1
 
         seed_database_if_needed()
+        ensure_firewall_rule()
 
         server_thread = threading.Thread(target=run_backend, name="sea-backend", daemon=True)
         server_thread.start()
@@ -200,6 +265,7 @@ def main() -> int:
             return 1
         logger.info("Backend ready after %.1fs; opening dashboard.", elapsed)
 
+        start_esp32_sync()
         webbrowser.open(DASHBOARD_URL)
 
         try:
@@ -217,14 +283,39 @@ def main() -> int:
             ).pack()
             tk.Label(
                 root,
-                text=f"Dashboard: {DASHBOARD_URL}\nESP32 endpoint: http://192.168.4.2:{PORT}",
+                text=f"Dashboard: {DASHBOARD_URL}",
                 font=("Segoe UI", 9), justify="left", padx=24, pady=4,
             ).pack()
+
+            sync_label = tk.Label(
+                root,
+                text="Detecting laptop network address...",
+                font=("Segoe UI", 9), justify="left", wraplength=440,
+                padx=24, pady=(4, 8),
+            )
+            sync_label.pack()
+
             buttons = tk.Frame(root, padx=24, pady=(8, 16))
             buttons.pack()
             tk.Button(buttons, text="Open Dashboard", width=18, command=lambda: webbrowser.open(DASHBOARD_URL)).pack(side="left", padx=6)
             tk.Button(buttons, text="Exit", width=12, command=root.destroy).pack(side="left", padx=6)
 
+            def refresh_sync():
+                s = _sync_status
+                if s is None:
+                    sync_label.configure(text="Detecting laptop network address...")
+                else:
+                    url = s.get("backend_url") or "not detected"
+                    msg = s.get("message") or ""
+                    online = s.get("online")
+                    state_line = ("ESP32 configured: YES - Device Online" if online
+                                  else "ESP32 configured: NO")
+                    sync_label.configure(
+                        text=f"Laptop backend URL: {url}\n{msg}\n{state_line}"
+                    )
+                root.after(1000, refresh_sync)
+
+            root.after(200, refresh_sync)
             root.protocol("WM_DELETE_WINDOW", root.destroy)
             root.mainloop()
         except Exception:
@@ -232,6 +323,8 @@ def main() -> int:
             threading.Event().wait()
 
         logger.info("Launcher shutting down.")
+        if _esp32_sync is not None:
+            _esp32_sync.stop()
         request_shutdown()
         if server_thread.is_alive():
             server_thread.join(timeout=10)

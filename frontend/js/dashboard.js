@@ -10,23 +10,27 @@ async function loadDashboard() {
     const billingEl = document.getElementById('billing-section');
 
     try {
-        const [devices, latest, health] = await Promise.all([
+        const [devices, latest, health, conn] = await Promise.all([
             api.getDevices(),
             api.getLatestReadings(),
             api.health(),
+            api.getConnectionInfo().catch(() => null),
         ]);
 
         updateDeviceStatus(devices, latest);
-        renderConnectionCard(connectionEl, devices, latest, health);
+        renderConnectionCard(connectionEl, devices, latest, health, conn);
 
         if (!latest || latest.length === 0) {
             lastLiveTimestamp = null;
             lastLiveReading = null;
+            const waitingHint = (conn && conn.message)
+                ? conn.message
+                : 'Connect your ESP32-S3 device to start receiving energy measurements.';
             cardsEl.innerHTML = `
                 <div class="waiting-state" style="grid-column: 1 / -1;">
                     <div class="icon">📡</div>
                     <h3>Waiting for Device Data</h3>
-                    <p>Connect your ESP32-S3 device to start receiving energy measurements.</p>
+                    <p>${waitingHint}</p>
                 </div>`;
             if (insightsEl) insightsEl.innerHTML = '';
             if (billingEl) billingEl.innerHTML = '';
@@ -48,7 +52,7 @@ function connectionState(latest) {
     return freshnessFromDate(latest[0].timestamp);
 }
 
-function renderConnectionCard(container, devices, latest, health) {
+function renderConnectionCard(container, devices, latest, health, conn) {
     if (!container) return;
     const live = latest && latest[0];
     const device = getPrimaryDevice(devices, latest);
@@ -64,8 +68,13 @@ function renderConnectionCard(container, devices, latest, health) {
     const wifiState = state === 'CONNECTED' ? 'ok' : (state === 'NO_DEVICE' ? 'wait' : 'down');
     const serverState = !serverDown ? 'ok' : 'down';
 
+    // Enrich the waiting hints with the launcher's live ESP32-link status when
+    // no device has reported yet (walk-through for the client on first boot).
+    const managedHint = (conn && conn.managed && conn.message) ? conn.message : null;
+    const noDeviceHint = managedHint || 'No ESP32 device has connected to this assistant yet.';
+
     const stateMeta = {
-        NO_DEVICE: { label: 'NO DEVICE', tone: 'no-data', hint: 'No ESP32 device has connected to this assistant yet.' },
+        NO_DEVICE: { label: 'NO DEVICE', tone: 'no-data', hint: noDeviceHint },
         CONNECTED: { label: 'CONNECTED', tone: 'online', hint: 'ESP32 is streaming live measurements over Wi-Fi.' },
         STALE: { label: 'UPDATING', tone: 'connecting', hint: lastSeen ? `ESP32 last reported ${lastSeen}. Waiting for the next reading.` : 'ESP32 has not reported in the last minute. Checking again...' },
         OFFLINE: { label: 'OFFLINE', tone: 'offline', hint: lastSeen ? `ESP32 last reported ${lastSeen}. Wi-Fi link is down.` : 'ESP32 has not reported recently. Wi-Fi link is down.' },

@@ -19,6 +19,12 @@ struct ControlCommandData {
 class APIClient {
 public:
     APIClient();
+    // Set the base URL (e.g. "http://192.168.4.5:8000") configured at runtime
+    // by the desktop application. Configured URLs are normalized (trailing
+    // slash stripped). An empty/invalid URL leaves the client unconfigured.
+    void setBaseUrl(const String& url);
+    bool isConfigured() const;
+    const String& baseUrl() const { return _baseUrl; }
     bool registerDevice(const String& deviceId, const String& deviceName);
     bool sendMeasurement(const String& deviceId, float voltage, float current,
                          float power, float energy, float frequency, float powerFactor);

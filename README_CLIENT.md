@@ -70,30 +70,29 @@ On your Windows PC, open **Settings → Wi-Fi** and connect to the ESP32's own n
 
 | Setting | Value |
 |---|---|
-| Wi-Fi network (SSID) | `SmartEnergy` |
+| Wi-Fi network (SSID) | `SmartEnergyESP32` |
 | Password | `SmartEnergy123` |
 
 ### Step 3 — Wait for the connection
 
-Wait until Windows shows the laptop is connected to `SmartEnergy`.
+Wait until Windows shows the laptop is connected to `SmartEnergyESP32`.
 
-### Step 4 — Confirm the laptop's address
+### Step 4 — Open the app (the IP is automatic)
 
-The ESP32 hotspot normally provides these addresses:
+The ESP32 hotspot provides the laptop **any free address** it chooses
+(`192.168.4.2`, `192.168.4.3`, ...). You never need to know it:
 
-| Device | Address |
+| Item | Value |
 |---|---|
 | ESP32 Access Point | `192.168.4.1` |
-| Laptop / backend | `192.168.4.2` |
+| Laptop / backend | auto-detected (`192.168.4.X`) |
 | Backend port | `8000` |
 | Primary device ID | `ESP32-S3-01` |
 
-> **Important.** The ESP32 currently sends readings to the backend at
-> **`192.168.4.2:8000`**.
->
-> This means the laptop **must receive the address `192.168.4.2`** while it is
-> connected to the `SmartEnergy` hotspot. In normal use the ESP32 gives the
-> laptop this address automatically — you do not need to change anything.
+> **The address is automatic.** `SmartEnergyAssistant.exe` detects the laptop's
+> current IPv4 address and sends it to the ESP32 (`POST /api/backend/config` on
+> `192.168.4.1`). No IP editing, no CMD commands, no firmware changes — the ESP32
+> simply starts uploading to the detected URL (`http://192.168.4.X:8000`).
 
 ---
 
@@ -101,8 +100,11 @@ The ESP32 hotspot normally provides these addresses:
 
 1. **Double-click** `SmartEnergyAssistant.exe`.
 2. **Wait a few seconds** while it starts (a small window titled *"Smart Energy Assistant is running"* appears).
-3. On the **first run only**, Windows Firewall may ask for permission — click **Allow access** so the hardware can reach the app.
-4. Your **dashboard opens automatically** in the default browser.
+3. On the **first run only**, the app adds the Windows Firewall rule
+   `SmartEnergyBackend8000` automatically so the hardware can reach the app
+   (no manual firewall setup needed).
+4. The app detects your laptop's IP, configures the ESP32 with it, and your
+   **dashboard opens automatically** in the default browser.
 
 The dashboard is normally available at:
 
@@ -131,7 +133,7 @@ Live readings update automatically about every few seconds when **all** of these
 
 - [ ] ESP32 is powered on
 - [ ] PZEM-004T communication is working
-- [ ] Laptop is connected to the `SmartEnergy` Wi-Fi
+- [ ] Laptop is connected to the `SmartEnergyESP32` Wi-Fi
 - [ ] `SmartEnergyAssistant.exe` is running
 
 ---
@@ -200,10 +202,10 @@ C:\Users\<your-user>\AppData\Local\SmartEnergyAssistant\
 | Problem | Possible solution |
 |---|---|
 | Dashboard does not open | Wait a few seconds, then check that `SmartEnergyAssistant.exe` is still running and its small window is open. |
-| Windows Firewall message appears | Click **Allow access**. |
-| Dashboard shows Offline | Check the ESP32 power; check the PZEM power; make sure the laptop is connected to `SmartEnergy` Wi-Fi; make sure `SmartEnergyAssistant.exe` is running; wait a few seconds. |
-| Dashboard is connected but readings do not update | Confirm the ESP32 is powered; confirm the PZEM is connected; confirm the laptop is on `SmartEnergy`; check that the laptop's address is `192.168.4.2`; restart `SmartEnergyAssistant.exe`; restart the ESP32 if needed. |
-| Wi-Fi is connected but no data appears | The ESP32 must reach the laptop at **`192.168.4.2:8000`**. Confirm the `SmartEnergy` Wi-Fi is connected, the laptop received address `192.168.4.2`, the application is running, and firewall access was allowed. |
+| Dashboard shows "Connect this laptop to SmartEnergyESP32 Wi-Fi..." | The laptop is not connected to the hardware Wi-Fi. Connect to `SmartEnergyESP32` (password `SmartEnergy123`) — the app will pick it up automatically, no restart needed. |
+| Dashboard shows Offline | Check the ESP32 power; check the PZEM power; make sure the laptop is connected to `SmartEnergyESP32` Wi-Fi; make sure `SmartEnergyAssistant.exe` is running; wait a few seconds. |
+| Dashboard is connected but readings do not update | Confirm the ESP32 is powered; confirm the PZEM is connected; confirm the laptop is on `SmartEnergyESP32` Wi-Fi; make sure no other Wi-Fi network is controlling the connection; restart `SmartEnergyAssistant.exe`; restart the ESP32 if needed. |
+| Wi-Fi is connected but no data appears | The app pushes the backend URL to the ESP32 automatically. Confirm the laptop is on `SmartEnergyESP32` Wi-Fi, `SmartEnergyAssistant.exe` is running, and firewall rule `SmartEnergyBackend8000` was allowed (added automatically on first run). |
 | "SmartScreen" warning appears | The application is currently an **unsigned** Windows executable, so Windows may show a blue warning. If it appears, choose **More info → Run anyway**. This is normal for new unbranded software and is safe when you received the file from us. |
 
 ---
@@ -211,10 +213,10 @@ C:\Users\<your-user>\AppData\Local\SmartEnergyAssistant\
 ## 10. Important Usage Notes
 
 - Keep the **ESP32 powered on** while using live monitoring.
-- Keep the laptop **connected to the `SmartEnergy` Wi-Fi**.
+- Keep the laptop **connected to the `SmartEnergyESP32` Wi-Fi**.
 - **Do not change** the ESP32 hotspot configuration unless we tell you to.
 - **Do not delete** application data unless we tell you to.
-- The laptop must keep its expected network address (`192.168.4.2`) for live ESP32 communication.
+- The laptop address (`192.168.4.X`) is detected automatically — you never need to enter or edit it.
 - An **internet connection is not required** for the local ESP32 → laptop monitoring to work.
 
 ---
@@ -224,9 +226,9 @@ C:\Users\<your-user>\AppData\Local\SmartEnergyAssistant\
 - [ ] ESP32 powered ON
 - [ ] PZEM connected
 - [ ] Laptop Wi-Fi ON
-- [ ] Connected to `SmartEnergy`
+- [ ] Connected to `SmartEnergyESP32`
 - [ ] `SmartEnergyAssistant.exe` started
-- [ ] Firewall access allowed if requested
+- [ ] Firewall rule added automatically (first run)
 - [ ] Dashboard opened
 - [ ] Live readings updating
 

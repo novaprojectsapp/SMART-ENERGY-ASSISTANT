@@ -1,10 +1,18 @@
 #include "api_client.h"
 #include "config.h"
+#include "config_server.h"
 
 APIClient::APIClient()
-    : _baseUrl("http://" + String(BACKEND_HOST) + ":" + String(BACKEND_PORT))
-    , _lastHttpResponseCode(0)
+    : _lastHttpResponseCode(0)
     , _lastSendOk(false) {
+}
+
+void APIClient::setBaseUrl(const String& url) {
+    _baseUrl = normalizeBackendUrl(url);
+}
+
+bool APIClient::isConfigured() const {
+    return _baseUrl.length() > 0 && isValidBackendUrl(_baseUrl);
 }
 
 String APIClient::_postJson(const String& url, const String& payload) {
@@ -214,8 +222,8 @@ void APIClient::_printHttpFailure(int httpCode, const String& body) {
         Serial.println("ERROR: Could not connect to backend (HTTP -1).");
         Serial.println("Check:");
         Serial.println("- Laptop is connected to SmartEnergyESP32");
-        Serial.println("- Laptop IP is 192.168.4.2");
-        Serial.println("- Backend is running (uvicorn ... --port 8000)");
+        Serial.println("- Laptop backend URL was pushed via /api/backend/config");
+        Serial.println("- Backend is running (SmartEnergyAssistant.exe) on port 8000");
         Serial.println("- Windows Firewall is not blocking port 8000");
         return;
     }

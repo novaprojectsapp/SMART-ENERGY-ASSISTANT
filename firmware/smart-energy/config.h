@@ -20,8 +20,20 @@
 // =============================================
 // Backend Configuration
 // =============================================
-#define BACKEND_HOST "192.168.4.2"
-#define BACKEND_PORT 8000
+// The backend URL is NO LONGER hardcoded. It is configured at runtime by the
+// Smart Energy Assistant desktop application via the AP configuration server
+// (POST /api/backend/config). An optional default (blank = disabled) can be
+// overridden/persisted by the desktop app at any time.
+#define DEFAULT_BACKEND_URL ""
+
+// =============================================
+// ESP32 AP Configuration Server
+// =============================================
+// Serves POST /api/backend/config and GET /api/backend/status on the SoftAP
+// so the desktop EXE can push the laptop's dynamically detected backend URL.
+#define ESP32_AP_CONFIG_SERVER_PORT 80
+#define ESP32_NVS_NAMESPACE "sea"
+#define ESP32_NVS_BACKEND_URL_KEY "backend_url"
 
 // =============================================
 // Device Configuration

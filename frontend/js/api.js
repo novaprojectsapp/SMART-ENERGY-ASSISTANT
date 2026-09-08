@@ -108,4 +108,5 @@ const api = {
     runScheduler: () => api.post('/scheduler/run'),
     getDeviceControlStatus: (id) => api.get(`/devices/${id}/control/status`),
     getPendingControl: (id) => api.get(`/devices/${id}/control/pending`),
+    getConnectionInfo: () => api.get('/setup/connection'),
 };
