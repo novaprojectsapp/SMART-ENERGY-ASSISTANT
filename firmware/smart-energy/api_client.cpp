@@ -4,7 +4,8 @@
 
 APIClient::APIClient()
     : _lastHttpResponseCode(0)
-    , _lastSendOk(false) {
+    , _lastSendOk(false)
+    , _consecutiveFailures(0) {
 }
 
 void APIClient::setBaseUrl(const String& url) {
@@ -26,6 +27,13 @@ String APIClient::_postJson(const String& url, const String& payload) {
 
     int httpCode = http.POST(payload);
     _lastHttpResponseCode = httpCode;
+
+    if (httpCode < 0) {
+        // Connection-level failure (laptop gone, backend not running, firewall).
+        _consecutiveFailures++;
+    } else {
+        _consecutiveFailures = 0;
+    }
 
     String body;
     if (httpCode > 0) {
@@ -123,6 +131,12 @@ String APIClient::_getJson(const String& url) {
 
     int httpCode = http.GET();
     _lastHttpResponseCode = httpCode;
+
+    if (httpCode < 0) {
+        _consecutiveFailures++;
+    } else {
+        _consecutiveFailures = 0;
+    }
 
     String body;
     if (httpCode > 0) {

@@ -51,7 +51,7 @@ from backend.app.utils.startup import (  # noqa: E402
     wait_until_ready,
 )
 from backend.app.utils.esp32_bridge import ESP32_AP_IP, ESP32_CONFIG_PORT, backend_url_for  # noqa: E402
-from backend.app.utils.esp32_sync import ESP32Sync  # noqa: E402
+from backend.app.utils.esp32_sync import ESP32Sync, set_runtime_info  # noqa: E402
 
 logger = logging.getLogger("sea_launcher")
 
@@ -147,6 +147,10 @@ def run_backend() -> None:
         log_level=os.environ.get("LOG_LEVEL", "info").lower(),
         access_log=False,
         workers=1,
+        # Do NOT let uvicorn reconfigure the root logger: it clears the
+        # RotatingFileHandler(s) installed above and, inside the windowed EXE
+        # (stdout/stderr = devnull), every app/launcher log line would be lost.
+        log_config=None,
     )
     global _server
     _server = uvicorn.Server(config)
@@ -249,7 +253,10 @@ def main() -> int:
             return 1
 
         seed_database_if_needed()
-        ensure_firewall_rule()
+
+        firewall_ok = ensure_firewall_rule()
+        if not firewall_ok:
+            logger.warning("Firewall rule '%s' is NOT active - ESP32 uploads may fail.", FIREWALL_RULE_NAME)
 
         server_thread = threading.Thread(target=run_backend, name="sea-backend", daemon=True)
         server_thread.start()
@@ -265,6 +272,13 @@ def main() -> int:
             return 1
         logger.info("Backend ready after %.1fs; opening dashboard.", elapsed)
 
+        set_runtime_info(
+            {
+                "backend": "RUNNING",
+                "firewall": "READY" if firewall_ok else "WARNING",
+                "port": PORT,
+            }
+        )
         start_esp32_sync()
         webbrowser.open(DASHBOARD_URL)
 
@@ -308,10 +322,18 @@ def main() -> int:
                     url = s.get("backend_url") or "not detected"
                     msg = s.get("message") or ""
                     online = s.get("online")
+                    runtime = s.get("runtime") or {}
+                    firewall = runtime.get("firewall") or "UNKNOWN"
                     state_line = ("ESP32 configured: YES - Device Online" if online
                                   else "ESP32 configured: NO")
                     sync_label.configure(
-                        text=f"Laptop backend URL: {url}\n{msg}\n{state_line}"
+                        text=(
+                            f"Laptop backend URL: {url}\n"
+                            f"{msg}\n"
+                            f"{state_line}\n"
+                            f"Backend: {runtime.get('backend') or 'RUNNING'}  |  "
+                            f"Firewall: {firewall}"
+                        )
                     )
                 root.after(1000, refresh_sync)
 

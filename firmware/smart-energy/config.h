@@ -27,6 +27,22 @@
 #define DEFAULT_BACKEND_URL ""
 
 // =============================================
+// UDP Backend Discovery (ESP32 listens on the SoftAP)
+// =============================================
+// The laptop backend announces itself over UDP on the SoftAP subnet so the
+// ESP32 learns the laptop's dynamic 192.168.4.X address with NO hardcoded IP
+// ("192.168.4.2/3/4/100 ... all supported"). Constants must mirror
+// backend/app/utils/udp_discovery.py.
+#define BACKEND_DISCOVERY_SERVICE "SMART_ENERGY_BACKEND"
+#define BACKEND_DISCOVERY_VERSION 1
+#define BACKEND_DISCOVERY_UDP_PORT 44441
+#define BACKEND_DISCOVERY_MAX_PACKET 512
+// After this many consecutive HTTP connection failures the firmware considers
+// the laptop backend lost, returns to WAITING_FOR_BACKEND and keeps listening
+// for a new UDP announcement (no reboot required).
+#define BACKEND_LOST_FAILURE_THRESHOLD 5
+
+// =============================================
 // ESP32 AP Configuration Server
 // =============================================
 // Serves POST /api/backend/config and GET /api/backend/status on the SoftAP

@@ -43,7 +43,11 @@ def test_duplicate_device():
         "id": "test-device-001",
         "name": "Duplicate",
     })
-    assert res.status_code == 409
+    assert res.status_code == 200
+    data = res.json()
+    assert data["id"] == "test-device-001"
+    # Idempotent re-registration refreshes the name from the (newer) caller.
+    assert data["name"] == "Duplicate"
 
 
 def test_list_devices():
@@ -1078,7 +1082,7 @@ def _make_hw_appliance(device_id=None, name=None, channel=1):
     if name is None:
         name = f"Sockets {_hw_seq}"
     r = client.post("/api/v1/devices", json={"id": device_id, "name": device_id, "device_type": "PZEM-004T"})
-    if r.status_code not in (201, 409):
+    if r.status_code not in (200, 201):
         raise AssertionError(r.text)
     r = client.post("/api/v1/appliances", json={
         "name": name, "type": "SOCKET", "channel": channel,

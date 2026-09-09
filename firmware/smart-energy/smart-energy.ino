@@ -4,12 +4,14 @@
 #include "pzem_manager.h"
 #include "wifi_manager.h"
 #include "config_server.h"
+#include "backend_discovery.h"
 #include "api_client.h"
 #include "relay_manager.h"
 
 PZEMManager pzem;
 WiFiManager wifi;
 ConfigServer configServer;
+BackendDiscovery discovery;
 APIClient api;
 RelayManager relay;
 
@@ -26,6 +28,72 @@ PZEMData lastReading;
 // backend should never re-return it, but if it does we re-acknowledge safely
 // instead of toggling the relay again.
 String lastExecutedCommandId = "NO_COMMAND";
+
+// Backend link state machine, driven by UDP discovery + HTTP config push.
+enum BackendState {
+    ST_WAITING_FOR_BACKEND,   // no laptop backend known yet
+    ST_BACKEND_DISCOVERED,    // got a valid backend (UDP/HTTP), applying it
+    ST_REGISTERING_DEVICE,    // sending device registration
+    ST_STREAMING              // registered, uploading PZEM readings
+};
+BackendState netState = ST_WAITING_FOR_BACKEND;
+
+void setState(BackendState newState) {
+    if (netState == newState) {
+        return;
+    }
+    netState = newState;
+    switch (netState) {
+        case ST_WAITING_FOR_BACKEND:
+            Serial.println("\n[SYS] Waiting for Smart Energy backend...");
+            break;
+        case ST_BACKEND_DISCOVERED:
+            Serial.println("[SYS] Backend discovered - applying configuration");
+            break;
+        case ST_REGISTERING_DEVICE:
+            Serial.println("[SYS] Registering device with backend...");
+            break;
+        case ST_STREAMING:
+            Serial.println("[SYS] Backend online - streaming PZEM readings");
+            break;
+    }
+}
+
+void applyBackendUrl(const String& url) {
+    deviceRegistered = false;
+    api.setBaseUrl(url);
+    api.resetFailures();
+    lastRegisterAttempt = millis() - DEVICE_REGISTER_RETRY_MS;
+    lastSend = 0;
+    lastControlPoll = 0;
+}
+
+// Called by the ConfigServer whenever the desktop EXE pushes a new backend URL
+// (HTTP POST /api/backend/config). Resets registration state and registers now.
+void onBackendConfigured() {
+    Serial.println("[SYS] New backend URL received - resetting registration state");
+    applyBackendUrl(configServer.getBackendUrl());
+    setState(ST_BACKEND_DISCOVERED);
+}
+
+// Called by the UDP discovery listener with a valid host/port.
+void onBackendDiscovered(const String& host, uint16_t port) {
+    String url = "http://" + host + ":" + String(port);
+    Serial.printf("\nBackend discovered: %s\n", url.c_str());
+    applyBackendUrl(url);
+    configServer.applyDiscoveredBackend(url);
+    setState(ST_BACKEND_DISCOVERED);
+}
+
+// Backend is repeatedly unreachable: invalidate the discovery, keep PZEM +
+// UDP listening, and return to WAITING_FOR_BACKEND (no reboot required).
+void handleBackendLost() {
+    Serial.println("[SYS] Backend unreachable - returning to WAITING_FOR_BACKEND");
+    api.setBaseUrl("");
+    api.resetFailures();
+    deviceRegistered = false;
+    setState(ST_WAITING_FOR_BACKEND);
+}
 
 void setup() {
     Serial.begin(SERIAL_BAUD);
@@ -46,15 +114,21 @@ void setup() {
     }
     configServer.onConfigured(onBackendConfigured);
 
+    // Listen for UDP backend discovery broadcasts (any laptop IPv4 works).
+    discovery.begin(BACKEND_DISCOVERY_UDP_PORT);
+    discovery.onDiscovered(onBackendDiscovered);
+
     Serial.println("\n========================================");
     Serial.println("SMART ENERGY ASSISTANT");
     Serial.println("NETWORK CONFIGURATION");
     Serial.println("========================================");
     Serial.printf("ESP32 AP IP:   %s\n", wifi.getLocalIP().c_str());
-    Serial.printf("Backend URL:   %s\n", api.isConfigured() ? api.baseUrl().c_str() : "(not configured - waiting for desktop EXE)");
+    Serial.printf("Backend URL:   %s\n", api.isConfigured() ? api.baseUrl().c_str() : "(not configured - waiting for UDP discovery / desktop EXE)");
     Serial.printf("Device ID:     %s\n", DEVICE_ID);
     Serial.printf("Relay GPIO:    %d (Active-Low: %s)\n", RELAY_CHANNEL_1_PIN, RELAY_ACTIVE_LOW ? "YES" : "NO");
     Serial.println("========================================\n");
+
+    setState(ST_WAITING_FOR_BACKEND);
 }
 
 void loop() {
@@ -62,6 +136,9 @@ void loop() {
 
     // ---------- Config server: serves POST /api/backend/config + GET /api/backend/status ----------
     configServer.tick();
+
+    // ---------- UDP backend discovery (always listening, never blocks for long) ----------
+    discovery.tick();
 
     // ---------- Periodic PZEM reading (always runs, independent of Wi-Fi) ----------
     if (now - lastPzemRead >= PZEM_READ_INTERVAL_MS) {
@@ -91,9 +168,15 @@ void loop() {
     // ---------- Register device (only when a laptop is connected AND a backend URL is configured) ----------
     if (laptopConnected && api.isConfigured() && !deviceRegistered && (now - lastRegisterAttempt >= DEVICE_REGISTER_RETRY_MS)) {
         lastRegisterAttempt = now;
+        setState(ST_REGISTERING_DEVICE);
         deviceRegistered = api.registerDevice(DEVICE_ID, DEVICE_NAME);
         if (!deviceRegistered) {
             Serial.println("[SYS] Registration failed, will retry next cycle");
+            if (api.consecutiveFailures() >= BACKEND_LOST_FAILURE_THRESHOLD) {
+                handleBackendLost();
+            }
+        } else {
+            setState(ST_STREAMING);
         }
     }
 
@@ -109,6 +192,11 @@ void loop() {
             lastReading.frequency,
             lastReading.powerFactor);
         Serial.printf("[SYS] Send result: %s\n\n", ok ? "OK" : "FAILED (will retry next cycle)");
+        if (ok) {
+            setState(ST_STREAMING);
+        } else if (api.consecutiveFailures() >= BACKEND_LOST_FAILURE_THRESHOLD) {
+            handleBackendLost();
+        }
     }
 
     // ---------- Control command polling (connected + registered + configured only) ----------
@@ -116,18 +204,6 @@ void loop() {
         lastControlPoll = now;
         handleControlPoll();
     }
-}
-
-// Called by the ConfigServer whenever the desktop EXE pushes a new backend URL.
-// Resets the registration state and triggers an immediate registration attempt.
-void onBackendConfigured() {
-    Serial.println("[SYS] New backend URL received - resetting registration state");
-    deviceRegistered = false;
-    api.setBaseUrl(configServer.getBackendUrl());
-    // Bump lastRegisterAttempt so the very next loop attempts registration now.
-    lastRegisterAttempt = millis() - DEVICE_REGISTER_RETRY_MS;
-    lastSend = 0;
-    lastControlPoll = 0;
 }
 
 // Fetch any pending command, execute the relay, and acknowledge.

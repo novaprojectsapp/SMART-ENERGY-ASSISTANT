@@ -33,11 +33,16 @@ public:
                             bool success, const String& relayState, const String& message);
     int getLastHttpResponseCode();
     bool isLastSendSuccessful();
+    // Number of consecutive connection-level failures (HTTP code < 0). The main
+    // loop uses this to decide when the laptop backend is lost.
+    int consecutiveFailures() const { return _consecutiveFailures; }
+    void resetFailures() { _consecutiveFailures = 0; }
 
 private:
     String _baseUrl;
     int _lastHttpResponseCode;
     bool _lastSendOk;
+    int _consecutiveFailures;
     String _postJson(const String& url, const String& payload);
     String _getJson(const String& url);
     void _printHttpFailure(int httpCode, const String& body);

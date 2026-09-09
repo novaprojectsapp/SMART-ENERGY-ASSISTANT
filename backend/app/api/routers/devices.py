@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Response, status
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 from ...database import get_db
@@ -18,18 +18,25 @@ def _device_status(device: Device, db: Session) -> str:
 
 
 @router.post("", response_model=DeviceResponse, status_code=201)
-def register_device(device_in: DeviceCreate, db: Session = Depends(get_db)):
+def register_device(device_in: DeviceCreate, response: Response, db: Session = Depends(get_db)):
     caps_json = encode_capabilities(device_in.capabilities)
     existing = db.query(Device).filter(Device.id == device_in.id).first()
     if existing:
-        # Idempotent re-registration: refresh the self-declared capabilities and
-        # name from the (possibly newer) firmware, keep the 409 so callers can
-        # still detect "already known" without treating it as an error.
+        # Idempotent re-registration: the same device registering again (e.g. the
+        # ESP32 re-registers after every power cycle / backend reconfiguration)
+        # refreshes the self-declared capabilities and name and returns 200.
+        # The 409 (conflict) contract was removed so clients never special-case a
+        # "device already known" response -- 201 = created, 200 = already known.
         existing.capabilities = caps_json
         if device_in.name:
             existing.name = device_in.name
         db.commit()
-        raise HTTPException(status_code=409, detail=f"Device '{device_in.id}' already registered (capabilities refreshed)")
+        db.refresh(existing)
+        resp = DeviceResponse.model_validate(existing)
+        resp.status = _device_status(existing, db)
+        response.status_code = status.HTTP_200_OK
+        logger.info("Device re-registered (idempotent 200): %s", existing.id)
+        return resp
 
     device = Device(
         id=device_in.id,

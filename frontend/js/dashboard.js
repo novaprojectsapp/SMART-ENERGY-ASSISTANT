@@ -62,6 +62,9 @@ function renderConnectionCard(container, devices, latest, health, conn) {
     const lastSeen = live && live.timestamp ? timeAgo(live.timestamp) : (device && device.last_seen ? timeAgo(device.last_seen) : null);
 
     const serverDown = !health || health.status !== 'ok';
+    const runtime = (conn && conn.runtime) || null;
+    const firewallState = runtime ? runtime.firewall : null; // 'READY' | 'WARNING'
+    const backendState = runtime ? runtime.backend : null;    // 'RUNNING' | ...
 
     const pzemState = hasReading ? 'ok' : 'wait';
     const espState = state === 'CONNECTED' ? 'ok' : (state === 'STALE' ? 'wait' : (state === 'NO_DEVICE' ? 'wait' : 'down'));
@@ -123,6 +126,19 @@ function renderConnectionCard(container, devices, latest, health, conn) {
                 </div>
             </div>
             <div class="connection-footnote">Measured: PZEM → Serial → ESP32-S3 → Wi-Fi → Laptop → Assistant</div>
+            <div class="connection-chain">
+                <div class="chain-node ${backendState === 'RUNNING' ? 'ok' : 'wait'}">
+                    <div class="chain-icon">🧠</div>
+                    <div class="chain-name">Backend</div>
+                    <div class="chain-state">${backendState === 'RUNNING' ? 'Running' : (runtime ? 'Starting' : '—')}</div>
+                </div>
+                <div class="chain-link ${firewallState === 'READY' ? 'ok' : (firewallState === 'WARNING' ? 'down' : '')}"></div>
+                <div class="chain-node ${firewallState === 'READY' ? 'ok' : (firewallState === 'WARNING' ? 'wait' : '')}">
+                    <div class="chain-icon">🛡️</div>
+                    <div class="chain-name">Firewall</div>
+                    <div class="chain-state">${firewallState === 'READY' ? 'Ready' : (firewallState === 'WARNING' ? 'Warning' : '—')}</div>
+                </div>
+            </div>
         </div>`;
 }
 

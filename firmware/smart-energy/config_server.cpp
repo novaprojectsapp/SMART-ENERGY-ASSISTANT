@@ -113,6 +113,34 @@ void ConfigServer::_handleConfig() {
 
     String url = normalizeBackendUrl(rawUrl);
 
+    if (!_storeUrl(url)) {
+        _sendJson(500, "{\"configured\":false,\"error\":\"could not persist backend_url\"}");
+        return;
+    }
+
+    Serial.println();
+    Serial.printf("[BACKEND] Configured URL: %s\n", _backendUrl.c_str());
+    Serial.printf("[BACKEND] Backend host: %s (port inferred from URL)\n", backendHostFromUrl(_backendUrl).c_str());
+
+    char resp[160];
+    snprintf(resp, sizeof(resp), "{\"configured\":true,\"backend_url\":\"%s\"}", _backendUrl.c_str());
+    _sendJson(200, resp);
+}
+
+void ConfigServer::applyDiscoveredBackend(const String& url) {
+    if (!isValidBackendUrl(url)) {
+        Serial.printf("[DISCOVERY] Rejecting discovered backend URL: %s\n", url.c_str());
+        return;
+    }
+    String normalized = normalizeBackendUrl(url);
+    if (!_storeUrl(normalized)) {
+        Serial.println("[DISCOVERY] Could not persist discovered backend URL");
+        return;
+    }
+    Serial.printf("[BACKEND] Discovered URL: %s\n", _backendUrl.c_str());
+}
+
+bool ConfigServer::_storeUrl(const String& url) {
     // Persist to NVS so the device boot-recovery keeps using the same URL.
     Preferences prefs;
     prefs.begin(ESP32_NVS_NAMESPACE, false);
@@ -122,17 +150,10 @@ void ConfigServer::_handleConfig() {
     _backendUrl = url;
     _configured = true;
 
-    Serial.println();
-    Serial.printf("[BACKEND] Configured URL: %s\n", _backendUrl.c_str());
-    Serial.printf("[BACKEND] Backend host: %s (port inferred from URL)\n", backendHostFromUrl(_backendUrl).c_str());
-
     if (_onConfigured != nullptr) {
         _onConfigured();
     }
-
-    char resp[160];
-    snprintf(resp, sizeof(resp), "{\"configured\":true,\"backend_url\":\"%s\"}", _backendUrl.c_str());
-    _sendJson(200, resp);
+    return true;
 }
 
 void ConfigServer::_handleStatus() {

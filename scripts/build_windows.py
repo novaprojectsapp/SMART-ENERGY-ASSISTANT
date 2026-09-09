@@ -24,6 +24,11 @@ EXE_NAME = "SmartEnergyAssistant"
 DATAS = [
     (ROOT / "frontend", "frontend"),
     (ROOT / "backend" / "config", "backend/config"),
+    # Optional seed database: on a fresh client the launcher copies this into
+    # %LOCALAPPDATA%\SmartEnergyAssistant once, so the primary ESP32 device is
+    # already registered and readable before the first hardware upload. It is
+    # never used again once the writable app-data DB exists.
+    (ROOT / "smart_energy.db", "smart_energy.db"),
 ]
 
 HIDDEN_IMPORTS = [

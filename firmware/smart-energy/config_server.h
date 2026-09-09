@@ -35,11 +35,17 @@ public:
     bool isConfigured() const { return _configured; }
     const String& getBackendUrl() const { return _backendUrl; }
 
+    // Apply a backend URL discovered over UDP. Validates, persists to NVS and
+    // triggers the onConfigured callback exactly like POST /api/backend/config.
+    void applyDiscoveredBackend(const String& url);
+
     // Optional callback invoked after a new URL is applied. Used by the main
     // loop to reset device registration and resume upload immediately.
     void onConfigured(void (*callback)()) { _onConfigured = callback; }
 
 private:
+    // Shared store path: validate -> normalize -> persist NVS -> set -> callback.
+    bool _storeUrl(const String& url);
     void _handleConfig();
     void _handleStatus();
     void _sendJson(int code, const String& body);

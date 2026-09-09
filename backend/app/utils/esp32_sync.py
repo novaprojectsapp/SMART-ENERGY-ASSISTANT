@@ -42,12 +42,30 @@ _status: dict = {
     "online": False,
     "last_attempt_at": None,
     "config_errors": 0,
+    "runtime": {
+        "backend": "UNKNOWN",
+        "firewall": "UNKNOWN",
+        "port": bridge.BACKEND_PORT,
+    },
 }
 
 
 def get_sync_status() -> dict:
     with _status_lock:
         return dict(_status)
+
+
+def set_runtime_info(runtime: dict) -> None:
+    """Merge launcher-side runtime facts (firewall/backend) into the status.
+
+    The launcher owns the firewall rule and the in-process backend; this is the
+    channel by which those facts reach the dashboard via /setup/connection so a
+    firewall failure is never silently hidden.
+    """
+    with _status_lock:
+        merged = dict(_status.get("runtime", {}))
+        merged.update({k: v for k, v in runtime.items() if v is not None})
+        _status["runtime"] = merged
 
 
 def _set_status(**kwargs) -> None:
