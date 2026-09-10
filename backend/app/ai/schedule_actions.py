@@ -26,8 +26,9 @@ _pending_drafts: dict[str, dict] = {}
 
 
 class ScheduleActions:
-    def __init__(self, db: Session):
+    def __init__(self, db: Session, device_id: str | None = None):
         self.db = db
+        self.device_id = device_id
 
     # ------------------------------------------------------------------ utils
     def _norm(self, value: str) -> str:
@@ -41,7 +42,10 @@ class ScheduleActions:
         if not ref:
             return None, "Which appliance do you mean? Please name it (e.g. 'bulb 1')."
 
-        appliances = self.db.query(Appliance).all()
+        query = self.db.query(Appliance)
+        if self.device_id:
+            query = query.filter(Appliance.device_id == self.device_id)
+        appliances = query.all()
         if not appliances:
             return None, "You have not registered any appliances yet. Add one from the Smart Scheduler page first."
 
@@ -194,7 +198,12 @@ class ScheduleActions:
 
     # ------------------------------------------------------------------- manage
     def list_schedules(self) -> str:
-        schedules = self.db.query(Schedule).order_by(Schedule.created_at.asc()).all()
+        query = self.db.query(Schedule)
+        if self.device_id:
+            query = query.join(Appliance, Appliance.id == Schedule.appliance_id).filter(
+                Appliance.device_id == self.device_id
+            )
+        schedules = query.order_by(Schedule.created_at.asc()).all()
         if not schedules:
             return "You have no schedules yet. Say something like 'turn on bulb 1 at 6 PM every day' to create one."
         scheduler = SchedulerService(self.db)
@@ -209,7 +218,10 @@ class ScheduleActions:
         return "Your schedules: " + "; ".join(lines)
 
     def list_appliances(self) -> str:
-        appliances = self.db.query(Appliance).all()
+        query = self.db.query(Appliance)
+        if self.device_id:
+            query = query.filter(Appliance.device_id == self.device_id)
+        appliances = query.all()
         if not appliances:
             return "You have no registered appliances. Add one from the Smart Scheduler page."
         return "Registered appliances: " + ", ".join(

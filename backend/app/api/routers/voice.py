@@ -4,12 +4,14 @@ from pydantic import BaseModel
 from ...database import get_db
 from ...ai.intent_engine import classify_intent
 from ...ai.llm_fallback import call_llm_fallback
-from ...ai.data_access import get_latest_reading, get_today_readings, calc_daily_energy, get_energy_kwh
+from ...ai.context_builder import ContextBuilder
+from ...ai.response_composer import compose_response
+from ...ai.data_access import get_latest_reading, get_today_readings, calc_daily_energy, get_energy_kwh, get_recent_readings
 from ...ai.schedule_parser import extract_appliance_ref, parse_time
 from ...ai.schedule_actions import ScheduleActions
 from ...billing.engine import load_tariff, calculate_billing
 from ...models import Device
-from ...utils.time import utcnow
+from ...utils.time import utcnow, naive_utc
 from ...utils.device_selection import select_device_id
 from datetime import datetime, timedelta, timezone
 import json
@@ -34,25 +36,53 @@ class VoiceQueryResponse(BaseModel):
     processing_time_ms: float
 
 
+# ---------------------------------------------------------------------------
+# Lightweight per-session conversation history (bounded, in-memory)
+# ---------------------------------------------------------------------------
+_conversation_history: dict[str, list[dict]] = {}
+MAX_HISTORY_TURNS = 10
+
+
+def _get_history(session_key: str) -> list[dict]:
+    return _conversation_history.get(session_key, [])
+
+
+def _add_history(session_key: str, role: str, text: str, intent: str = ""):
+    if session_key not in _conversation_history:
+        _conversation_history[session_key] = []
+    _conversation_history[session_key].append({"role": role, "text": text, "intent": intent})
+    if len(_conversation_history[session_key]) > MAX_HISTORY_TURNS:
+        _conversation_history[session_key] = _conversation_history[session_key][-MAX_HISTORY_TURNS:]
+
+
+# ---------------------------------------------------------------------------
+# Formatting helpers
+# ---------------------------------------------------------------------------
 def _format_power(watts: float) -> str:
     if watts >= 1000:
-        return f"{watts/1000:.2f} kilowatts"
-    return f"{watts:.2f} watts"
+        return f"{watts / 1000:.2f} kilowatts"
+    return f"{watts:.0f} watts"
 
 
 def _format_energy(kwh: float) -> str:
-    return f"{kwh:.4f} kilowatt-hours"
+    return f"{kwh:.2f} kilowatt-hours"
 
 
 def _format_currency(amount: float, currency: str = "INR") -> str:
     if currency == "INR":
-        return f"rupees {amount:.2f}"
-    return f"{currency} {amount:.2f}"
+        return f"rupees {amount:.0f}"
+    return f"{currency} {amount:.0f}"
 
 
-def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: str = "") -> str:
+def _format_currency_short(amount: float) -> str:
+    return f"\u20b9{amount:,.0f}"
+
+
+# ---------------------------------------------------------------------------
+# Deterministic local response generator (offline, fast, no hallucination)
+# ---------------------------------------------------------------------------
+def _local_response(intent_data, device_id: str | None, db: Session, raw_text: str = "") -> str:
     intent = intent_data.intent
-    period = intent_data.period
 
     if intent == "HELP":
         return (
@@ -69,7 +99,7 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
     if intent == "NEEDS_CLARIFICATION":
         return "Do you mean your current power in watts or the energy you've consumed in kilowatt-hours?"
 
-    actions = ScheduleActions(db)
+    actions = ScheduleActions(db, device_id=device_id)
     session_key = device_id or "default"
 
     if intent in ("MANUAL_APPLIANCE_ON", "MANUAL_APPLIANCE_OFF"):
@@ -90,19 +120,13 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
         if merged.get("schedule_type") is None:
             merged["schedule_type"] = previous.get("schedule_type") or "DAILY"
 
-        # If the new utterance only mentions a time ("turn it on at 6"), carry over
-        # the appliance/action from the previous draft.
         if not merged.get("appliance_ref") and previous.get("appliance_ref"):
             merged["appliance_ref"] = previous["appliance_ref"]
         if not merged.get("action") and previous.get("action"):
             merged["action"] = previous["action"]
 
-        # Multi-turn ON/OFF pair: a follow-up "turn it off at 11 PM" supplies an
-        # off_time but no start_time. Keep the previously-established ON time so
-        # the pair is complete.
         if merged.get("off_time") and not merged.get("start_time") and previous.get("start_time"):
             merged["start_time"] = previous["start_time"]
-        # A complete pair leads with ON.
         if merged.get("off_time") and merged.get("start_time"):
             merged["action"] = "ON"
 
@@ -137,38 +161,51 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
     if intent == "CURRENT_POWER":
         if not latest:
             return "No device data available yet. Please ensure your device is connected and sending readings."
-        return f"Your current measured power is {_format_power(latest.power)}."
+        pw = latest.power
+        if pw >= 1000:
+            return f"Right now your system is drawing {pw / 1000:.2f} kilowatts."
+        return f"Right now your system is drawing {pw:.0f} watts."
 
     if intent == "CURRENT_VOLTAGE":
         if not latest:
             return "No device data available yet."
-        return f"Your current voltage is {latest.voltage:.2f} volts."
+        v = latest.voltage
+        if v > 250:
+            return f"Your voltage is {v:.1f} volts. That is above the safe limit, and protection is active."
+        if v < 200:
+            return f"Your voltage is {v:.1f} volts. That seems unusually low."
+        return f"Your voltage is {v:.1f} volts."
 
     if intent == "CURRENT_CURRENT":
         if not latest:
             return "No device data available yet."
-        return f"Your current is {latest.current:.2f} amperes."
+        return f"Your current draw is {latest.current:.2f} amps."
 
     if intent == "CURRENT_ENERGY":
-        return f"You have used {_format_energy(today_kwh)} today. This is a measured value."
+        return f"You have used {_format_energy(today_kwh)} today."
 
     if intent == "CURRENT_FREQUENCY":
         if not latest:
             return "No device data available yet."
-        return f"Your current frequency is {latest.frequency:.2f} hertz."
+        return f"Your frequency is {latest.frequency:.1f} hertz."
 
     if intent == "CURRENT_POWER_FACTOR":
         if not latest:
             return "No device data available yet."
-        return f"Your power factor is {latest.power_factor:.3f}."
+        pf = latest.power_factor
+        if pf >= 0.95:
+            return f"Your power factor is {pf:.2f}, which is good."
+        if pf >= 0.85:
+            return f"Your power factor is {pf:.2f}, which is fair."
+        return f"Your power factor is {pf:.2f}, which is low."
 
     if intent == "TODAY_ENERGY":
-        return f"You have used {_format_energy(today_kwh)} today. This is based on measured data."
+        return f"You have used {_format_energy(today_kwh)} today."
 
     if intent == "TODAY_COST":
         tariff = load_tariff()
         billing = calculate_billing(today_kwh, tariff, "daily")
-        return f"Today's measured energy charge is {_format_currency(billing.total_charge, tariff.currency)} for {today_kwh:.4f} kilowatt-hours."
+        return f"Today's electricity charge is {_format_currency_short(billing.total_charge)} for {today_kwh:.2f} units."
 
     if intent == "MONTHLY_BILL":
         tariff = load_tariff()
@@ -178,7 +215,7 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
         avg_daily = recent_kwh / 7.0
         projected = avg_daily * 30
         billing = calculate_billing(projected, tariff, "monthly_equivalent")
-        return f"Based on your recent usage, your estimated monthly energy charge is {_format_currency(billing.total_charge, tariff.currency)} for {projected:.2f} kilowatt-hours."
+        return f"Based on your recent usage, your estimated monthly bill is {_format_currency_short(billing.total_charge)} for about {projected:.0f} units."
 
     if intent == "BILL_PREDICTION":
         tariff = load_tariff()
@@ -188,18 +225,26 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
         avg_daily = recent_kwh / 7.0
         billing_period_kwh = avg_daily * (tariff.billing_period_months * 30)
         billing = calculate_billing(billing_period_kwh, tariff, "billing_period")
-        return f"Based on your recent usage of {avg_daily:.2f} kilowatt-hours per day, your estimated {tariff.billing_period_months}-month billing period energy charge is {_format_currency(billing.total_charge, tariff.currency)} for {billing_period_kwh:.2f} kilowatt-hours. This is an estimate."
+        months = tariff.billing_period_months
+        return f"Based on your recent usage, your estimated {months}-month bill is {_format_currency_short(billing.total_charge)} for about {billing_period_kwh:.0f} units. This is an estimate."
 
     if intent == "BILL_EXPLANATION":
         tariff = load_tariff()
-        return f"Your bill uses {tariff.tariff_name}. Slabs: First 100 units free, 101-200 at 2.35 rupees, 201-500 at 4.45 rupees, above 500 at 6.45 rupees. Billing period is {tariff.billing_period_months} months."
+        slabs = []
+        for s in tariff.slabs:
+            if s.max_units:
+                slabs.append(f"First {s.max_units} units: {s.rate_per_unit} rupees per unit")
+            else:
+                slabs.append(f"Above {s.min_units - 1} units: {s.rate_per_unit} rupees per unit")
+        slab_text = "; ".join(slabs)
+        return f"Your bill uses the {tariff.tariff_name} tariff with {tariff.billing_period_months}-month billing periods. Slabs: {slab_text}."
 
     if intent == "ENERGY_INSIGHT":
         if not today_readings:
             return "No data available for insights yet."
         peak = max((r.power for r in today_readings), default=0)
         avg = sum(r.power for r in today_readings) / len(today_readings) if today_readings else 0
-        return f"Today's energy insight: Average power {_format_power(avg)}, peak {_format_power(peak)}, total usage {_format_energy(today_kwh)}."
+        return f"Today's average power is {_format_power(avg)}, peak was {_format_power(peak)}, and you used {_format_energy(today_kwh)}."
 
     if intent == "PEAK_USAGE":
         if not today_readings:
@@ -212,26 +257,26 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
 
     if intent == "APPLIANCE_ACTIVITY":
         if not latest:
-            return "No appliance activity data yet. Once your device is streaming readings, I can describe the live draw on your dashboard."
+            return "No appliance activity data yet."
         return (
-            f"Your current measured draw is {_format_power(latest.power)} at "
-            f"{latest.voltage:.2f} volts. Individual appliance recognition is not part of "
-            "this version - check the Smart Scheduler for your connected socket control."
+            f"Your current draw is {_format_power(latest.power)} at "
+            f"{latest.voltage:.1f} volts. Individual appliance detection is available "
+            "through the Smart Scheduler page."
         )
 
     if intent in ("DAILY_USAGE", "WEEKLY_USAGE", "MONTHLY_USAGE"):
-        return f"Today's energy usage is {_format_energy(today_kwh)}. Visit the analytics page for detailed daily, weekly, and monthly charts."
+        return f"Today's energy usage is {_format_energy(today_kwh)}."
 
     if intent == "SAVING_RECOMMENDATION":
         if not today_readings:
             return "I need usage data to provide saving recommendations."
         avg = sum(r.power for r in today_readings) / len(today_readings) if today_readings else 0
         if avg > 500:
-            return f"Your average power is {_format_power(avg)}, which is relatively high. Consider identifying always-on devices and turning off unused appliances."
-        return f"Your average power is {_format_power(avg)}, which is moderate. Monitor your usage patterns to find further savings."
+            return f"Your average power today is {_format_power(avg)}, which is relatively high. Consider identifying always-on devices and turning off unused appliances to reduce your bill."
+        return f"Your average power today is {_format_power(avg)}, which is moderate. Monitor your usage patterns to find further savings."
 
     if intent == "ENERGY_COACH":
-        return "I'm your energy coach! Visit the Coach page for personalized recommendations based on your actual usage patterns."
+        return "I'm your energy coach! Visit the Coach page for personalised recommendations based on your actual usage patterns."
 
     if intent == "WHAT_IF":
         return "Visit the What-If Simulator page to model scenarios like reducing consumption by a certain percentage."
@@ -242,55 +287,123 @@ def _handle_intent(intent_data, device_id: str | None, db: Session, raw_text: st
         if not device:
             return "No device registered yet."
         if device.last_seen:
-            age = (utcnow() - device.last_seen).total_seconds()
+            age = (naive_utc(utcnow()) - naive_utc(device.last_seen)).total_seconds()
             if age < 300:
-                return f"Device {device.name} is online. Last seen {int(age)} seconds ago."
-            return f"Device {device.name} appears offline. Last seen {int(age)} seconds ago."
+                return f"Your device is online and connected. Last seen {int(age)} seconds ago."
+            if age < 3600:
+                return f"Your device appears offline. Last seen {int(age / 60)} minutes ago."
+            return f"Your device appears offline. Last seen {int(age / 3600)} hours ago."
         return f"Device {device.name} has never sent a reading."
 
     if intent == "LAST_UPDATE":
         if not latest:
             return "No readings have been received yet."
-        age = (utcnow() - latest.timestamp).total_seconds()
+        age = (naive_utc(utcnow()) - naive_utc(latest.timestamp)).total_seconds()
         if age < 60:
-            return f"Last reading was {int(age)} seconds ago."
+            return f"The last reading was {int(age)} seconds ago."
         if age < 3600:
-            return f"Last reading was {int(age/60)} minutes ago."
-        return f"Last reading was {int(age/3600)} hours ago."
+            return f"The last reading was {int(age / 60)} minutes ago."
+        return f"The last reading was {int(age / 3600)} hours ago."
+
+    if intent in ("NORMAL_USAGE", "ENERGY_COMPARISON"):
+        recent = get_recent_readings(db, days=7, device_id=device_id)
+        if not recent:
+            return "I don't have enough historical data yet to compare your usage with your normal pattern."
+        powers = [r.power for r in recent]
+        avg_power = sum(powers) / len(powers) if powers else 0
+        recent_kwh = get_energy_kwh(db, utcnow() - timedelta(days=7), utcnow(), device_id)
+        avg_daily = recent_kwh / 7.0 if recent_kwh > 0 else 0
+        return f"Your average power over the last 7 days is {_format_power(avg_power)}, averaging {avg_daily:.2f} units per day."
 
     return "I can help you with energy monitoring, billing, and usage insights. What would you like to know?"
 
 
+# ---------------------------------------------------------------------------
+# Voice query endpoint — full AI pipeline
+# ---------------------------------------------------------------------------
 @router.post("/query", response_model=VoiceQueryResponse)
 async def process_voice_query(req: VoiceQueryRequest, db: Session = Depends(get_db)):
     start_time = time.time()
 
-    # Always answer live-readings intents against the primary hardware device
-    # (ESP32-S3-01) when the caller does not pin a specific device.
     device_id = select_device_id(db, req.device_id)
+    session_key = device_id or "default"
 
+    # Step 1: Normalise and classify intent locally
     intent_result = classify_intent(req.text)
     source = "LOCAL"
 
+    # Step 2: If local intent is UNKNOWN and low confidence, try Gemini as intent fallback
     if intent_result.intent == "UNKNOWN" and intent_result.confidence < 0.5:
         llm_result = await call_llm_fallback(req.text)
         if llm_result and llm_result.get("intent") != "UNKNOWN":
             intent_result = type("Intent", (), llm_result)()
             source = "LLM"
 
-    response_text = _handle_intent(intent_result, device_id, db, req.text)
+    # Step 3: For deterministic/control intents, use local response directly
+    deterministic_intents = {
+        "HELP", "UNKNOWN", "NEEDS_CLARIFICATION",
+        "CREATE_SCHEDULE", "UPDATE_SCHEDULE", "DELETE_SCHEDULE",
+        "ENABLE_SCHEDULE", "DISABLE_SCHEDULE", "LIST_SCHEDULES",
+        "MANUAL_APPLIANCE_ON", "MANUAL_APPLIANCE_OFF", "LIST_APPLIANCES",
+    }
+
+    intent_str = getattr(intent_result, "intent", "UNKNOWN")
+    confidence = getattr(intent_result, "confidence", 0.0)
+
+    if intent_str in deterministic_intents:
+        response_text = _local_response(intent_result, device_id, db, req.text)
+        _add_history(session_key, "user", req.text, intent_str)
+        _add_history(session_key, "assistant", response_text, intent_str)
+    else:
+        # Step 4: Build structured context for AI-assisted responses
+        ctx_builder = ContextBuilder(db, device_id)
+        context = ctx_builder.build()
+        context["query"] = req.text
+        context["intent"] = intent_str
+        context["confidence"] = confidence
+
+        # Step 5: Confidence-aware routing
+        # >= 0.85 → local deterministic response (fast, no API cost)
+        # 0.60-0.84 → AI-assisted response with structured context
+        # < 0.60 → full AI interpretation
+        use_ai = confidence < 0.85
+
+        if use_ai and confidence >= 0.60:
+            # Mid-confidence: try AI composition, fall back to local
+            history = _get_history(session_key)
+            ai_response = await compose_response(req.text, context, history)
+            if ai_response:
+                response_text = ai_response
+                source = "AI"
+            else:
+                response_text = _local_response(intent_result, device_id, db, req.text)
+        elif use_ai and confidence < 0.60:
+            # Low confidence: rely more on AI interpretation
+            history = _get_history(session_key)
+            ai_response = await compose_response(req.text, context, history)
+            if ai_response:
+                response_text = ai_response
+                source = "AI"
+            else:
+                response_text = _local_response(intent_result, device_id, db, req.text)
+        else:
+            # High confidence: fast local response
+            response_text = _local_response(intent_result, device_id, db, req.text)
+
+        _add_history(session_key, "user", req.text, intent_str)
+        _add_history(session_key, "assistant", response_text, intent_str)
 
     elapsed_ms = round((time.time() - start_time) * 1000, 2)
 
     logger.info(
-        "Voice query: '%s' -> intent=%s source=%s time=%sms",
-        req.text[:80], getattr(intent_result, 'intent', 'UNKNOWN'), source, elapsed_ms,
+        "Voice query: '%s' -> intent=%s confidence=%.2f source=%s time=%sms",
+        req.text[:80], intent_str, confidence, source, elapsed_ms,
     )
 
     return VoiceQueryResponse(
         query=req.text,
-        intent=getattr(intent_result, 'intent', 'UNKNOWN'),
-        confidence=getattr(intent_result, 'confidence', 0.0),
+        intent=intent_str,
+        confidence=confidence,
         response=response_text,
         source=source,
         processing_time_ms=elapsed_ms,

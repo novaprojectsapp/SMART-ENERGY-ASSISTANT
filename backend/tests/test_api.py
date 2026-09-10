@@ -1049,7 +1049,7 @@ def test_voice_uses_primary_hardware_readings():
     assert res.status_code == 200, res.text
     data = res.json()
     assert data["intent"] == "CURRENT_POWER"
-    assert "241.00" in data["response"], data["response"]
+    assert "241" in data["response"], data["response"]
     assert "777" not in data["response"], "Must not answer from the test/probe device"
 
 
