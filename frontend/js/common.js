@@ -23,8 +23,8 @@ function formatDate(iso) {
     return d.toLocaleString();
 }
 
-const FRESH_CONNECTED_S = 10;
-const FRESH_STALE_S = 60;
+const FRESH_CONNECTED_S = 15;
+const FRESH_STALE_S = 120;
 
 function timeAgo(iso) {
     if (!iso) return 'never';

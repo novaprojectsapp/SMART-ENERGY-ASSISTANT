@@ -40,7 +40,7 @@
 // After this many consecutive HTTP connection failures the firmware considers
 // the laptop backend lost, returns to WAITING_FOR_BACKEND and keeps listening
 // for a new UDP announcement (no reboot required).
-#define BACKEND_LOST_FAILURE_THRESHOLD 5
+#define BACKEND_LOST_FAILURE_THRESHOLD 15
 
 // =============================================
 // ESP32 AP Configuration Server
@@ -74,7 +74,7 @@
 #define MEASUREMENT_INTERVAL_MS 2000
 #define PZEM_READ_INTERVAL_MS 1000
 #define WIFI_CHECK_INTERVAL_MS 10000
-#define DEVICE_REGISTER_RETRY_MS 30000
+#define DEVICE_REGISTER_RETRY_MS 5000
 #define CONTROL_POLL_INTERVAL_MS 1000
 
 // =============================================

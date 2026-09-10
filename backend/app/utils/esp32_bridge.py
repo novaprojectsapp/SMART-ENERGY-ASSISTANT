@@ -312,10 +312,20 @@ def detect_laptop_ipv4() -> Optional[str]:
 
 
 def wifi_connected_to_sea(interfaces: Optional[list] = None) -> bool:
-    """True when a Wi-Fi connection profile is reporting the SmartEnergyESP32 SSID."""
+    """True when a Wi-Fi connection profile is reporting the SmartEnergyESP32 SSID.
+
+    Falls back to direct ESP32 reachability check when the SSID profile
+    hasn't updated yet (common on Windows after initial connection).
+    """
     if interfaces is None:
         interfaces = enumerate_interfaces()
-    return any(str(i.get("ssid", "")).strip() == ESP32_AP_SSID for i in interfaces)
+    if any(str(i.get("ssid", "")).strip() == ESP32_AP_SSID for i in interfaces):
+        return True
+    # Fallback: if the ESP32 AP is reachable on its default IP, we're connected
+    # even if the Windows SSID profile hasn't propagated yet.
+    if any(in_sea_subnet(str(i.get("ip", ""))) for i in interfaces):
+        return True
+    return False
 
 
 # ---------------------------------------------------------------------------
@@ -352,7 +362,7 @@ def _http_json(url: str, method: str = "GET", payload: Any = None, timeout: floa
         return None, {}
 
 
-def esp32_reachable(timeout: float = 1.0) -> bool:
+def esp32_reachable(timeout: float = 2.0) -> bool:
     return tcp_reachable(ESP32_AP_IP, ESP32_CONFIG_PORT, timeout)
 
 

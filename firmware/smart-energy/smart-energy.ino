@@ -20,6 +20,7 @@ unsigned long lastSend = 0;
 unsigned long lastWifiCheck = 0;
 unsigned long lastRegisterAttempt = 0;
 unsigned long lastControlPoll = 0;
+unsigned long lastHeartbeatPing = 0;
 bool deviceRegistered = false;
 bool laptopConnected = false;
 PZEMData lastReading;
@@ -64,8 +65,7 @@ void applyBackendUrl(const String& url) {
     api.setBaseUrl(url);
     api.resetFailures();
     lastRegisterAttempt = millis() - DEVICE_REGISTER_RETRY_MS;
-    lastSend = 0;
-    lastControlPoll = 0;
+    lastHeartbeatPing = 0;
 }
 
 // Called by the ConfigServer whenever the desktop EXE pushes a new backend URL
@@ -85,11 +85,10 @@ void onBackendDiscovered(const String& host, uint16_t port) {
     setState(ST_BACKEND_DISCOVERED);
 }
 
-// Backend is repeatedly unreachable: invalidate the discovery, keep PZEM +
-// UDP listening, and return to WAITING_FOR_BACKEND (no reboot required).
+// Backend is repeatedly unreachable: keep the URL so we can retry, but
+// reset registration and return to WAITING_FOR_BACKEND.
 void handleBackendLost() {
-    Serial.println("[SYS] Backend unreachable - returning to WAITING_FOR_BACKEND");
-    api.setBaseUrl("");
+    Serial.println("[SYS] Backend unreachable - resetting registration, will keep retrying");
     api.resetFailures();
     deviceRegistered = false;
     setState(ST_WAITING_FOR_BACKEND);
@@ -203,6 +202,22 @@ void loop() {
     if (laptopConnected && api.isConfigured() && deviceRegistered && (now - lastControlPoll >= CONTROL_POLL_INTERVAL_MS)) {
         lastControlPoll = now;
         handleControlPoll();
+    }
+
+    // ---------- Heartbeat ping: lightweight health check every 5s ----------
+    // Keeps the backend alive and resets failure counters even when PZEM
+    // data is not valid or device is not yet registered.
+    if (laptopConnected && api.isConfigured() && (now - lastHeartbeatPing >= 5000)) {
+        lastHeartbeatPing = now;
+        String url = api.baseUrl() + "/api/v1/health";
+        HTTPClient http;
+        http.setTimeout(3000);
+        http.begin(url);
+        int httpCode = http.GET();
+        http.end();
+        if (httpCode >= 200 && httpCode < 300) {
+            api.resetFailures();
+        }
     }
 }
 
