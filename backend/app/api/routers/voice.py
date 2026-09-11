@@ -7,7 +7,7 @@ from ...ai.llm_fallback import call_llm_fallback
 from ...ai.context_builder import ContextBuilder
 from ...ai.response_composer import compose_response
 from ...ai.data_access import get_latest_reading, get_today_readings, calc_daily_energy, get_energy_kwh, get_recent_readings
-from ...ai.schedule_parser import extract_appliance_ref, parse_time
+from ...ai.schedule_parser import extract_appliance_ref, extract_draft, parse_time, parse_schedule_selector
 from ...ai.schedule_actions import ScheduleActions
 from ...billing.engine import load_tariff, calculate_billing
 from ...models import Device
@@ -98,61 +98,6 @@ def _local_response(intent_data, device_id: str | None, db: Session, raw_text: s
 
     if intent == "NEEDS_CLARIFICATION":
         return "Do you mean your current power in watts or the energy you've consumed in kilowatt-hours?"
-
-    actions = ScheduleActions(db, device_id=device_id)
-    session_key = device_id or "default"
-
-    if intent in ("MANUAL_APPLIANCE_ON", "MANUAL_APPLIANCE_OFF"):
-        draft = intent_data.extra or {}
-        action = "ON" if intent == "MANUAL_APPLIANCE_ON" else "OFF"
-        return actions.manual_control(draft.get("appliance_ref"), action)
-
-    if intent == "LIST_APPLIANCES":
-        return actions.list_appliances()
-
-    if intent == "LIST_SCHEDULES":
-        return actions.list_schedules()
-
-    if intent == "CREATE_SCHEDULE":
-        draft = dict(intent_data.extra or {})
-        previous = actions.load_draft(session_key) or {}
-        merged = {**previous, **draft}
-        if merged.get("schedule_type") is None:
-            merged["schedule_type"] = previous.get("schedule_type") or "DAILY"
-
-        if not merged.get("appliance_ref") and previous.get("appliance_ref"):
-            merged["appliance_ref"] = previous["appliance_ref"]
-        if not merged.get("action") and previous.get("action"):
-            merged["action"] = previous["action"]
-
-        if merged.get("off_time") and not merged.get("start_time") and previous.get("start_time"):
-            merged["start_time"] = previous["start_time"]
-        if merged.get("off_time") and merged.get("start_time"):
-            merged["action"] = "ON"
-
-        question = actions.maybe_clarify(merged)
-        if question:
-            actions.save_draft(session_key, merged)
-            return question
-
-        result, err = actions.create_schedule(merged)
-        if err:
-            return err
-        actions.clear_draft(session_key)
-        return result["message"]
-
-    if intent in ("ENABLE_SCHEDULE", "DISABLE_SCHEDULE"):
-        ref = extract_appliance_ref(raw_text)
-        t = parse_time(raw_text)
-        return actions.enable_disable("enable" if intent == "ENABLE_SCHEDULE" else "disable", ref, t)
-
-    if intent == "DELETE_SCHEDULE":
-        ref = extract_appliance_ref(raw_text)
-        t = parse_time(raw_text)
-        return actions.delete_schedule(ref, t)
-
-    if intent == "UPDATE_SCHEDULE":
-        return "To change a schedule, tell me the appliance and the new time, for example 'change bulb 1 to turn off at 11 PM'."
 
     latest = get_latest_reading(db, device_id)
     today_readings = get_today_readings(db, device_id)
@@ -319,6 +264,131 @@ def _local_response(intent_data, device_id: str | None, db: Session, raw_text: s
 
 
 # ---------------------------------------------------------------------------
+# Scheduling / appliance-management conversation flow (multi-turn capable)
+# ---------------------------------------------------------------------------
+_SCHEDULE_INTENTS = {
+    "CREATE_SCHEDULE", "UPDATE_SCHEDULE", "DELETE_SCHEDULE",
+    "ENABLE_SCHEDULE", "DISABLE_SCHEDULE", "LIST_SCHEDULES",
+    "MANUAL_APPLIANCE_ON", "MANUAL_APPLIANCE_OFF", "LIST_APPLIANCES",
+}
+
+_OP_FAMILIES_BY_INTENT = {
+    "ENABLE_SCHEDULE": "enable",
+    "DISABLE_SCHEDULE": "disable",
+    "DELETE_SCHEDULE": "delete",
+    "UPDATE_SCHEDULE": "update",
+}
+
+
+def _store_state(actions, key, state):
+    if state:
+        actions.save_draft(key, state)
+    else:
+        actions.clear_draft(key)
+
+
+def _is_create_draft(pending):
+    if not pending or pending.get("op"):
+        return False
+    return any(pending.get(f) for f in ("appliance_ref", "action", "start_time", "off_time", "time_ambiguous"))
+
+
+def _continue_management(actions, key, raw_text, pending):
+    """Advance an in-progress enable/disable/delete/update operation.
+
+    A follow-up turn may supply the appliance, a specific time, or an ordinal
+    ("the second one"). Anything already known is carried in `pending`.
+    """
+    op = pending.get("op")
+    ref = extract_appliance_ref(raw_text) or pending.get("ref")
+    time_ref = parse_time(raw_text) or pending.get("time_ref")
+    new_time = parse_time(raw_text) or pending.get("new_time")
+    selector = parse_schedule_selector(raw_text)
+    schedule_id = pending.get("schedule_id")
+
+    if not ref:
+        verb = {"enable": "enable", "disable": "disable", "delete": "delete", "update": "change"}.get(op, "change")
+        actions.save_draft(key, pending)
+        return f"Which appliance schedule should I {verb}? Please name it."
+
+    if op == "enable":
+        msg, state = actions.enable_disable("enable", ref, time_ref=time_ref, selector=selector, schedule_id=schedule_id)
+    elif op == "disable":
+        msg, state = actions.enable_disable("disable", ref, time_ref=time_ref, selector=selector, schedule_id=schedule_id)
+    elif op == "delete":
+        msg, state = actions.delete_schedule(ref, time_ref=time_ref, selector=selector, schedule_id=schedule_id)
+    else:
+        msg, state = actions.update_schedule(ref, new_time=new_time, selector=selector, schedule_id=schedule_id)
+    _store_state(actions, key, state)
+    return msg
+
+
+def _create_or_continue(actions, key, raw_text, pending):
+    """Create a schedule, or fill missing fields from a follow-up answer."""
+    extracted = extract_draft(raw_text)
+    base = {}
+    if pending and not pending.get("op"):
+        base = pending
+    merged = dict(base)
+    for field in ("appliance_ref", "action", "start_time", "off_time", "schedule_type", "days_of_week", "time_ambiguous"):
+        value = extracted.get(field)
+        if value:
+            merged[field] = value
+    if not merged.get("schedule_type"):
+        merged["schedule_type"] = "DAILY"
+
+    question = actions.maybe_clarify(merged)
+    if question:
+        actions.save_draft(key, merged)
+        return question
+
+    result, err = actions.create_schedule(merged)
+    if err:
+        actions.save_draft(key, merged)
+        return err
+    actions.clear_draft(key)
+    return result["message"]
+
+
+def _handle_schedule(intent_str, raw_text, device_id, db, intent_data):
+    actions = ScheduleActions(db, device_id=device_id)
+    key = device_id or "default"
+    pending = actions.load_draft(key) or {}
+    op = pending.get("op")
+
+    # Manual control: an explicit command wins, but "Turn it on." while a
+    # create draft is being completed is a clarification answer, not a command.
+    if intent_str in ("MANUAL_APPLIANCE_ON", "MANUAL_APPLIANCE_OFF"):
+        if _is_create_draft(pending):
+            return _create_or_continue(actions, key, raw_text, pending)
+        actions.clear_draft(key)
+        action = "ON" if intent_str == "MANUAL_APPLIANCE_ON" else "OFF"
+        ref = (intent_data.extra or {}).get("appliance_ref") or extract_appliance_ref(raw_text)
+        return actions.manual_control(ref, action)
+
+    if intent_str == "LIST_APPLIANCES":
+        actions.clear_draft(key)
+        return actions.list_appliances()
+
+    if intent_str == "LIST_SCHEDULES":
+        actions.clear_draft(key)
+        return actions.list_schedules()
+
+    # Continue an in-progress management op (the user answered a follow-up that
+    # was classified as UNKNOWN or as a repeated phrasing of the same op).
+    if op and (intent_str == "UNKNOWN" or _OP_FAMILIES_BY_INTENT.get(intent_str) == op):
+        return _continue_management(actions, key, raw_text, pending)
+
+    # Fresh management operation (supersedes any older pending op/draft).
+    if intent_str in _OP_FAMILIES_BY_INTENT:
+        family = _OP_FAMILIES_BY_INTENT[intent_str]
+        actions.clear_draft(key)
+        return _continue_management(actions, key, raw_text, {"op": family, "ref": extract_appliance_ref(raw_text)})
+
+    return _create_or_continue(actions, key, raw_text, pending)
+
+
+# ---------------------------------------------------------------------------
 # Voice query endpoint — full AI pipeline
 # ---------------------------------------------------------------------------
 @router.post("/query", response_model=VoiceQueryResponse)
@@ -339,18 +409,20 @@ async def process_voice_query(req: VoiceQueryRequest, db: Session = Depends(get_
             intent_result = type("Intent", (), llm_result)()
             source = "LLM"
 
-    # Step 3: For deterministic/control intents, use local response directly
-    deterministic_intents = {
-        "HELP", "UNKNOWN", "NEEDS_CLARIFICATION",
-        "CREATE_SCHEDULE", "UPDATE_SCHEDULE", "DELETE_SCHEDULE",
-        "ENABLE_SCHEDULE", "DISABLE_SCHEDULE", "LIST_SCHEDULES",
-        "MANUAL_APPLIANCE_ON", "MANUAL_APPLIANCE_OFF", "LIST_APPLIANCES",
-    }
-
+    # Step 3: For scheduling/management intents, and for follow-up answers to an
+    # in-progress scheduling conversation, use the multi-turn local flow.
     intent_str = getattr(intent_result, "intent", "UNKNOWN")
     confidence = getattr(intent_result, "confidence", 0.0)
 
-    if intent_str in deterministic_intents:
+    draft_check = ScheduleActions(db, device_id=device_id)
+    pending_draft = draft_check.load_draft(session_key)
+    continue_pending = intent_str == "UNKNOWN" and bool(pending_draft)
+
+    if intent_str in _SCHEDULE_INTENTS or continue_pending:
+        response_text = _handle_schedule(intent_str, req.text, device_id, db, intent_result)
+        _add_history(session_key, "user", req.text, intent_str)
+        _add_history(session_key, "assistant", response_text, intent_str)
+    elif intent_str in ("HELP", "UNKNOWN", "NEEDS_CLARIFICATION"):
         response_text = _local_response(intent_result, device_id, db, req.text)
         _add_history(session_key, "user", req.text, intent_str)
         _add_history(session_key, "assistant", response_text, intent_str)

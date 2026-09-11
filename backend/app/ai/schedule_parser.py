@@ -40,9 +40,46 @@ DAYS = {
     "sunday": 6, "sun": 6,
 }
 
+# Contextual period phrases: "7 in the morning", "6 in the evening",
+# "10 tonight", "11 at night". A word-clock heading (e.g. "six o'clock in
+# the evening") is also supported.
+PERIOD_MANNER = re.compile(
+    r"\b(1[0-2]|[0-9]|[a-z]+)\s*(?:o['\u2019]?clock\s*)?"
+    r"(?:in\s+the\s+|at\s+)?(morning|afternoon|evening|night|tonight)\b",
+    re.IGNORECASE,
+)
+NOON_MIDNIGHT = re.compile(r"\b(noon|midnight)\b", re.IGNORECASE)
+# A bare hour with no meridiem: "at 6", "by 8", "for 10", "at six".
+BARE_HOUR = re.compile(
+    r"\b(?:at|by|for|around|about)\s+"
+    r"(1[0-2]|[1-9]|one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve)\b",
+    re.IGNORECASE,
+)
+# Ordinals used to pick a specific schedule from a clarification list.
+ORDINALS = {
+    "1": 0, "2": 1, "3": 2, "4": 3,
+    "1st": 0, "2nd": 1, "3rd": 2, "4th": 3,
+    "first": 0, "second": 1, "third": 2, "fourth": 3,
+}
+
 
 def normalize_text(text: str) -> str:
     return re.sub(r"\s+", " ", text.lower().strip())
+
+
+def _period_context(text: str) -> str | None:
+    """Return an inferred AM/PM from any contextual period word in the text."""
+    if re.search(r"\bmorning\b", text, re.IGNORECASE):
+        return "am"
+    if re.search(r"\b(afternoon|evening|night|tonight)\b", text, re.IGNORECASE):
+        return "pm"
+    return None
+
+
+def _apply_period(hour: int, period: str) -> str:
+    if period == "am":
+        return f"{0 if hour == 12 else hour:02d}:00"
+    return f"{(hour if hour >= 12 else hour + 12):02d}:00"
 
 
 def parse_time(text: str) -> str | None:
@@ -86,6 +123,21 @@ def parse_time(text: str) -> str | None:
                 hour = 0
             return f"{hour:02d}:00"
 
+    # Contextual period: "7 in the morning" (AM), "6 in the evening",
+    # "10 tonight", "11 at night" (PM), and word-clock forms like
+    # "six o'clock in the evening".
+    m = PERIOD_MANNER.search(text)
+    if m:
+        token = m.group(1)
+        hour = int(token) if token.isdigit() else WORD_TIME_PLAIN.get(token)
+        if hour is not None and 1 <= hour <= 12:
+            return _apply_period(hour, "am" if m.group(2) == "morning" else "pm")
+
+    # "noon" -> 12:00, "midnight" -> 00:00
+    m = NOON_MIDNIGHT.search(text)
+    if m:
+        return "00:00" if m.group(1) == "midnight" else "12:00"
+
     # "half past ten" -> 10:30
     m = re.search(r"half\s+past\s+(\w+)", text)
     if m:
@@ -102,21 +154,18 @@ def parse_time(text: str) -> str | None:
             hour = hour if hour < 12 else 12
             return f"{hour:02d}:15"
 
-    # Plain "at six" or "at 6" -> 6:00 (06:00; if evening mentioned, 18:00)
-    m = re.search(r"\b(?:at|by)\s+(\w+)\b", text)
+    # Plain "at six" or "at 6": use a contextual period word if present
+    # anywhere in the phrase, otherwise leave it ambiguous (returns None so
+    # the assistant asks "6 AM or 6 PM?").
+    m = BARE_HOUR.search(text)
     if m:
         token = m.group(1)
-        hour = None
-        if token.isdigit():
-            hour = int(token)
-            if hour < 1 or hour > 12:
-                hour = None
-        elif token in WORD_TIME_PLAIN:
-            hour = WORD_TIME_PLAIN[token]
-        if hour is not None:
-            if re.search(r"\b(evening|night)\b", text) and hour < 12:
-                hour += 12
-            return f"{hour:02d}:00"
+        hour = int(token) if token.isdigit() else WORD_TIME_PLAIN.get(token)
+        if hour is not None and 1 <= hour <= 12:
+            period = _period_context(text)
+            if period:
+                return _apply_period(hour, period)
+            return None
 
     return None
 
@@ -195,21 +244,32 @@ def parse_recurrence(text: str) -> tuple[str, list[int] | None]:
     if re.search(r"\b(weekday|weekdays|mon\s*-\s*fri)\b", text):
         return "WEEKLY", [0, 1, 2, 3, 4]
 
-    if re.search(r"\b(every\s+day|daily|each\s+day|every\s+evening|every\s+night)\b", text):
+    if re.search(r"\b(weekend|weekends|sat\s*[-&]\s*sun)\b", text):
+        return "WEEKLY", [5, 6]
+
+    if re.search(r"\b(every\s+day|daily|each\s+day|every\s+evening|every\s+night|every\s+morning|every\s+afternoon)\b", text):
         return "DAILY", None
 
     return "DAILY", None
+
+
+def _detect_action(normalized: str) -> str | None:
+    """Find the ON/OFF action following a turn/switch verb, tolerating an
+    object in between ("turn it on", "turn the fan off")."""
+    m = re.search(r"\b(turn|switch)\b", normalized)
+    if not m:
+        return None
+    m2 = re.search(r"\b(on|off)\b", normalized[m.end():])
+    if not m2:
+        return None
+    return "ON" if m2.group(1) == "on" else "OFF"
 
 
 def extract_draft(text: str) -> dict:
     """Extract a scheduling draft. Missing fields are left as None."""
     normalized = normalize_text(text)
 
-    action = None
-    if re.search(r"\bturn\s+on\b", normalized) or re.search(r"\bswitch\s+on\b", normalized):
-        action = "ON"
-    elif re.search(r"\bturn\s+off\b", normalized) or re.search(r"\bswitch\s+off\b", normalized):
-        action = "OFF"
+    action = _detect_action(normalized)
 
     schedule_type, days = parse_recurrence(normalized)
     on_time, off_time = parse_time_pair(normalized)
@@ -221,6 +281,20 @@ def extract_draft(text: str) -> dict:
 
     start_time = on_time
 
+    # "Turn the bulb off at 10 PM." -> a single OFF event at 10 PM.
+    if action == "OFF" and off_time and not on_time:
+        start_time = off_time
+        off_time = None
+
+    ambiguous_hour = None
+    if start_time is None:
+        m = BARE_HOUR.search(normalized)
+        if m:
+            token = m.group(1)
+            hour = int(token) if token.isdigit() else WORD_TIME_PLAIN.get(token)
+            if hour is not None:
+                ambiguous_hour = hour
+
     return {
         "appliance_ref": extract_appliance_ref(normalized),
         "action": action,
@@ -228,6 +302,7 @@ def extract_draft(text: str) -> dict:
         "off_time": off_time,
         "schedule_type": schedule_type,
         "days_of_week": days,
+        "time_ambiguous": ambiguous_hour,
     }
 
 
@@ -247,13 +322,24 @@ def extract_appliance_ref(text: str) -> str | None:
 def parse_manual_action(text: str) -> dict:
     """Parse a direct manual on/off command (no schedule)."""
     normalized = normalize_text(text)
-    if re.search(r"\bturn\s+on\b", normalized) or re.search(r"\bswitch\s+on\b", normalized):
-        action = "ON"
-    elif re.search(r"\bturn\s+off\b", normalized) or re.search(r"\bswitch\s+off\b", normalized):
-        action = "OFF"
-    else:
-        action = None
     return {
         "appliance_ref": extract_appliance_ref(normalized),
-        "action": action,
+        "action": _detect_action(normalized),
     }
+
+
+def parse_schedule_selector(text: str | None) -> int | None:
+    """Return the 0-based index of a schedule chosen via an ordinal word.
+
+    Handles "the first one", "second", "3rd", etc. Returns None when no
+    ordinal is present.
+    """
+    if not text:
+        return None
+    m = re.search(r"\b(first|second|third|fourth|\d+st|\d+nd|\d+rd|\d+th)\b", text, re.IGNORECASE)
+    if not m:
+        return None
+    key = m.group(1).lower()
+    if key in ORDINALS:
+        return ORDINALS[key]
+    return None

@@ -72,26 +72,32 @@ def test_voice_create_pair_from_to():
     assert pair[0]["schedule_type"] == "WEEKLY"
 
 
-def test_voice_clarify_missing_off_time():
+def test_voice_single_on_event_created():
     did = _device("vclarif-off-dev")
     _appliance("Fan 1", "FAN", 1, did)
     d = _voice("turn on fan 1 at 6 PM", did)
     assert d["intent"] == "CREATE_SCHEDULE"
-    assert "What time should I turn it off" in d["response"]
-    # No incomplete schedule created for the requested ON time.
+    assert "Scheduled" in d["response"]
+    assert "at 18:00" in d["response"]
+    # Single ON event: no forced OFF pair.
     scheds = client.get("/api/v1/schedules").json()
-    assert not any(s["on_time"] == "18:00" and s["off_time"] is None for s in scheds)
+    single = [s for s in scheds if s["on_time"] == "18:00" and s["off_time"] is None]
+    assert single
+    assert single[0]["action"] == "ON"
 
 
-def test_voice_clarify_missing_on_time():
+def test_voice_single_off_event_created():
     did = _device("vclarif-on-dev")
     _appliance("Fan 2", "FAN", 2, did)
     d = _voice("turn off fan 2 at 11 PM", did)
     assert d["intent"] == "CREATE_SCHEDULE"
-    assert "What time should I turn it on" in d["response"]
-    # No incomplete schedule created for the requested OFF time.
+    assert "Scheduled" in d["response"]
+    assert "at 23:00" in d["response"]
+    # Single OFF event: no forced ON pair.
     scheds = client.get("/api/v1/schedules").json()
-    assert not any(s["off_time"] == "23:00" and s["on_time"] is None for s in scheds)
+    single = [s for s in scheds if s["on_time"] == "23:00" and s["off_time"] is None]
+    assert single
+    assert single[0]["action"] == "OFF"
 
 
 def test_voice_manual_on_creates_pending():
@@ -131,12 +137,12 @@ def test_voice_clarification_ambiguous_appliance():
     assert "Which appliance do you mean" in d["response"]
 
 
-def test_voice_clarification_missing_time():
+def test_voice_clarification_missing_action():
     did = _device("vtime-dev")
     _appliance("Hall Socket", "SOCKET", 3, did)
     d = _voice("schedule the socket", did)
     assert d["intent"] == "CREATE_SCHEDULE"
-    assert "What time" in d["response"]
+    assert "ON or OFF" in d["response"]
 
 
 def test_voice_delete_schedule():
